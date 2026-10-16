@@ -3,7 +3,9 @@
     python -m bia_captioner.evaluate --checkpoint checkpoints/run/best.pt --split test
 
 Each image is captioned once (beam search by default) and compared with all
-of its human captions. Optionally writes every prediction to a JSON file.
+of its reference captions. Optionally writes every prediction to a JSON file, a
+captioned image grid (--gallery) and a Markdown table of examples with one
+thumbnail per image (--examples).
 """
 
 from __future__ import annotations
@@ -99,7 +101,7 @@ def save_gallery(
     columns: int = 4,
     tile: int = 320,
 ) -> None:
-    """Grid of images with the model's caption (and one human caption) under each.
+    """Grid of images with the model's caption (and its first reference caption) under each.
 
     Made to be shared: a README, a slide or a post.
     """
@@ -118,10 +120,47 @@ def save_gallery(
         sheet.paste(square.resize((tile - 8, tile - 8), Image.LANCZOS), (x + 4, y + 4))
         lines = textwrap.wrap(prediction, chars)[:3]
         draw.multiline_text((x + 8, y + tile), "\n".join(lines), fill="black", font=font)
-        human = textwrap.shorten("human: " + refs[0], width=int(chars * 1.2), placeholder="...")
-        draw.text((x + 8, y + tile + 18 * len(lines) + 6), human, fill=(110, 110, 110), font=small)
+        reference = textwrap.shorten(
+            "reference: " + refs[0], width=int(chars * 1.2), placeholder="..."
+        )
+        draw.text(
+            (x + 8, y + tile + 18 * len(lines) + 6), reference, fill=(110, 110, 110), font=small
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(path)
+
+
+def save_examples(
+    images: Sequence[Image.Image],
+    predictions: Sequence[str],
+    references: Sequence[Sequence[str]],
+    directory: Path,
+    title: str = "Examples",
+    thumbnail: int = 160,
+) -> Path:
+    """Write `directory/NN.jpg` thumbnails and a `directory/README.md` table.
+
+    One row per image: the image, the model's caption, the dataset's first
+    reference caption and whether the model matched one of the references word
+    for word.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = [
+        "| image | model caption | reference caption | exact |",
+        "|:---:|---|---|:---:|",
+    ]
+    for i, (image, prediction, refs) in enumerate(zip(images, predictions, references)):
+        name = f"{i:02d}.jpg"
+        side = min(image.size)  # centre square crop, like the gallery
+        left, top = (image.width - side) // 2, (image.height - side) // 2
+        square = image.convert("RGB").crop((left, top, left + side, top + side))
+        square.resize((thumbnail, thumbnail), Image.LANCZOS).save(directory / name, quality=90)
+        exact = "yes" if exact_match([prediction], [refs]) == 1.0 else "no"
+        cells = [f'<img src="{name}" width="{thumbnail}">', prediction, refs[0], exact]
+        rows.append("| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |")
+    path = directory / "README.md"
+    path.write_text(f"# {title}\n\n" + "\n".join(rows) + "\n")
+    return path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -137,6 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", type=Path, default=None, help="write scores + predictions (JSON)")
     p.add_argument("--gallery", type=Path, default=None, help="save a captioned image grid (PNG)")
     p.add_argument("--gallery-size", type=int, default=12, help="images in the gallery")
+    p.add_argument(
+        "--examples", type=Path, default=None,
+        help="write a Markdown table of examples (thumbnail, model and reference caption) to this folder",
+    )  # fmt: skip
+    p.add_argument("--examples-size", type=int, default=8, help="images in the examples table")
     p.add_argument(
         "--shuffle-images", action="store_true",
         help="sanity check: caption each image from another image's pixels (scores must drop)",
@@ -191,6 +235,16 @@ def run(argv: Sequence[str] | None = None, dataset_loader=None) -> dict[str, flo
             args.gallery,
         )
         logger.info("wrote %s", args.gallery)
+    if args.examples is not None:
+        picks = spread_indices(len(dataset), args.examples_size)
+        path = save_examples(
+            [dataset.image(i) for i in picks],
+            [predictions[i] for i in picks],
+            [references[i] for i in picks],
+            args.examples,
+            title=f"{data_config.dataset_id}: {args.split} examples",
+        )
+        logger.info("wrote %s", path)
     return scores
 
 

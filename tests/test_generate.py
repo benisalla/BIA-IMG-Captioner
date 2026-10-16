@@ -143,6 +143,37 @@ def test_evaluate_writes_a_gallery(tmp_path: Path) -> None:
     assert image.size[0] == 4 * 320 and image.size[1] > 320  # one row of 4 tiles + text
 
 
+def test_evaluate_writes_an_examples_table(tmp_path: Path) -> None:
+    path, _ = write_checkpoint(tmp_path / "run")
+    rows = [{"image": Image.new("RGB", (60, 40), c), "original_alt_text": ["a dog | runs"]}
+            for c in ("white", "black", "red")]  # fmt: skip
+    examples = tmp_path / "examples"
+    evaluate.run(
+        ["--checkpoint", str(path), "--device", "cpu", "--num-workers", "0", "--beam-size", "1",
+         "--examples", str(examples), "--examples-size", "2"],
+        dataset_loader=lambda *a, **k: FakeSplit(rows),
+    )  # fmt: skip
+    table = (examples / "README.md").read_text().splitlines()
+    assert table[0].startswith("# ")
+    body = [line for line in table if line.startswith("| <img")]
+    assert len(body) == 2  # first and last image of the split
+    assert '<img src="00.jpg"' in body[0] and '<img src="01.jpg"' in body[1]
+    assert "a dog \\| runs" in body[0]  # a "|" in a caption must not break the table
+    assert body[0].endswith("| no |") or body[0].endswith("| yes |")
+    assert Image.open(examples / "00.jpg").size == (160, 160)
+
+
+def test_save_examples_marks_exact_matches(tmp_path: Path) -> None:
+    from bia_captioner.evaluate import save_examples
+
+    images = [Image.new("RGB", (32, 32), "red"), Image.new("RGB", (32, 32), "blue")]
+    path = save_examples(
+        images, ["a red square", "a red square"], [["a red square"], ["a blue square"]], tmp_path
+    )
+    rows = [line for line in path.read_text().splitlines() if line.startswith("| <img")]
+    assert rows[0].endswith("| yes |") and rows[1].endswith("| no |")
+
+
 def test_shuffled_order_never_keeps_an_image_and_is_fixed() -> None:
     from bia_captioner.evaluate import shuffled_order
 

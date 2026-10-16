@@ -96,11 +96,55 @@ For real-world scale (Conceptual Captions 3M / 12M, nocaps, TextCaps,
 VizWiz) and for using any other Hugging Face dataset, see
 [docs/datasets.md](docs/datasets.md).
 
+## Real examples: input → output
+
+Real outputs of the two models trained on a laptop CPU, on **test images
+they never saw**. The images are spread evenly over the test split (not
+hand-picked); `cap-evaluate --examples` regenerates these tables
+([docs/inference.md](docs/inference.md#evaluate-on-the-test-split)).
+
+**Synthetic shapes**: BIA-ViT encoder trained from scratch, 8 epochs (~2 h).
+88% of all 500 test captions are exactly right; most of the remaining errors
+are a small circle called a square.
+
+| image | model caption | reference caption | exact |
+|:---:|---|---|:---:|
+| <img src="docs/examples/shapes/00.jpg" width="110"> | a big yellow circle on the left and a small red circle on the right | a big yellow circle on the left and a small red circle on the right | yes |
+| <img src="docs/examples/shapes/01.jpg" width="110"> | a big green triangle | a big green triangle | yes |
+| <img src="docs/examples/shapes/02.jpg" width="110"> | a small blue circle | a small blue circle | yes |
+| <img src="docs/examples/shapes/03.jpg" width="110"> | a small green triangle | a small green triangle | yes |
+| <img src="docs/examples/shapes/04.jpg" width="110"> | a small yellow triangle | a small yellow triangle | yes |
+| <img src="docs/examples/shapes/05.jpg" width="110"> | a small yellow triangle | a small yellow triangle | yes |
+| <img src="docs/examples/shapes/06.jpg" width="110"> | a big blue square on the left and a big red circle on the right | a big blue square on the left and a big red circle on the right | yes |
+| <img src="docs/examples/shapes/07.jpg" width="110"> | a big red circle | a big red circle | yes |
+| <img src="docs/examples/shapes/08.jpg" width="110"> | a small blue square | a small blue square | yes |
+| <img src="docs/examples/shapes/09.jpg" width="110"> | a big red circle | a big red circle | yes |
+
+**Flower photos**: frozen ImageNet ResNet-50 + Transformer decoder, 4 epochs
+(~75 min), test BLEU-4 47.7. The model names the same species as the
+reference in 9 of the 10 photos below (it calls the yellow nasturtium a
+hibiscus); the other differences are colours and backgrounds ("in the
+garden"). The reference captions were written by the BLIP model and are not
+always right themselves (the dataset calls nasturtiums "watercress").
+
+| image | model caption | reference caption | exact |
+|:---:|---|---|:---:|
+| <img src="docs/examples/flowers/00.jpg" width="110"> | a passion flower in the garden | a blue passion flower with a yellow flower in the middle of the flower | no |
+| <img src="docs/examples/flowers/01.jpg" width="110"> | a close up of a yellow hibiscus | a close up of a yellow watercress | no |
+| <img src="docs/examples/flowers/02.jpg" width="110"> | a pink hibiscus in the middle of the garden | a red hibiscus in the dark night | no |
+| <img src="docs/examples/flowers/03.jpg" width="110"> | a red geranium in the middle of the garden | a bright orange geranium with a green background | no |
+| <img src="docs/examples/flowers/04.jpg" width="110"> | a pink azalea in the garden | a pink azalea in the garden | yes |
+| <img src="docs/examples/flowers/05.jpg" width="110"> | a yellow buttercup in the garden | a yellow buttercup in the grass | no |
+| <img src="docs/examples/flowers/06.jpg" width="110"> | a white magnolia in the middle of the garden | a pink magnolia in the sky | no |
+| <img src="docs/examples/flowers/07.jpg" width="110"> | a close up of a cautleya spicata in the garden | a close up of a cautleya spicata in the garden | yes |
+| <img src="docs/examples/flowers/08.jpg" width="110"> | a pink japanese anemone with yellow and green leaves | a pink japanese anemone with yellow and white petals | no |
+| <img src="docs/examples/flowers/09.jpg" width="110"> | a white japanese anemone with yellow flowers in the middle of the garden | a white japanese anemone in the dark | no |
+
 ## Verified so far
 
 Everything below was run on a laptop CPU (no GPU), see [docs/testing.md](docs/testing.md):
 
-- **143 tests (96% line coverage)**, including the standard neural-network sanity checks:
+- **145 tests (96% line coverage)**, including the standard neural-network sanity checks:
   initial loss = ln(vocab), numerical gradient check, activations stay scaled
   through depth, every parameter gets a gradient and is updated, no
   information leaks from future tokens or between samples of a batch, padding

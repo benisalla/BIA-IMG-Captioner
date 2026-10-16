@@ -52,6 +52,22 @@ all human captions of each image. `--output` saves the scores and
 every prediction next to its references. `--limit N` scores only the first N
 images, `--beam-size 1` is greedy and much faster.
 
+Two ways to *show* the results, both using images spread evenly over the
+split (not hand-picked):
+
+```bash
+cap-evaluate --checkpoint checkpoints/run/best.pt --split test \
+             --gallery gallery.png --gallery-size 12 \
+             --examples examples/ --examples-size 10
+```
+
+- `--gallery` saves one image grid with the model's caption (black) and a
+  reference caption (grey) under each photo: for a slide or a post.
+- `--examples` writes `examples/README.md`, a table with a thumbnail, the
+  model's caption, the reference caption and whether they match exactly, plus
+  the thumbnails: GitHub renders it as a page. The tables in
+  [docs/examples](examples) were made this way.
+
 ## Web demo
 
 ```bash

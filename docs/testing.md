@@ -113,6 +113,8 @@ prior (every caption starts "a small/big ... on the left and ...").
 
 ![Captions written by the model for unseen synthetic test images](images/shapes_gallery.jpg)
 
+The same test images as a table of inputs and outputs: [examples/shapes](examples/shapes/README.md).
+
 Colors, sizes, counts and left / right are almost always right. Of the 60
 wrong captions, 58 differ by one shape word, mostly a small circle called a
 square (47 times): at 64 px with 8 px patches a small circle is a few
@@ -159,6 +161,8 @@ The test photos with their generated captions (`--gallery`, picks spread over
 the whole split):
 
 ![Flowers test gallery](images/flowers_gallery.jpg)
+
+As a table of inputs and outputs: [examples/flowers](examples/flowers/README.md).
 
 The model names the species (petunia, thorn apple, dahlia, primula, gazania,
 gentian, foxglove, ...) and notices details such as a bee on the flower; it

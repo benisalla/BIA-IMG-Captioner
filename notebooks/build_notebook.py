@@ -414,18 +414,22 @@ plt.show()
 """)
 
 md("""
-### 7.2 BLEU on the test split, and a shareable gallery
+### 7.2 BLEU on the test split, a shareable gallery and an examples table
 
 The test split was never used for training or model selection. Beam size 3.
-`gallery.png` shows test photos with the model's captions (and one human
-caption in grey): ready for a README or a post.
+`gallery.png` shows test photos with the model's captions (and the reference
+caption in grey): ready for a README or a post. `examples/README.md` is a
+table of real inputs and outputs (thumbnail, model caption, reference caption,
+exact match), ready to commit to GitHub. Both use test images spread evenly
+over the split, not hand-picked ones.
 """)
 code("""
 from bia_captioner import evaluate
 
 test_args = ["--checkpoint", str(OUTPUT_DIR / T.BEST_CHECKPOINT), "--split", "test",
              "--beam-size", "3", "--output", str(OUTPUT_DIR / "test_predictions.json"),
-             "--gallery", str(OUTPUT_DIR / "gallery.png")]
+             "--gallery", str(OUTPUT_DIR / "gallery.png"),
+             "--examples", str(OUTPUT_DIR / "examples")]
 if SMOKE_TEST:
     test_args += ["--limit", "16"]
 test_scores = evaluate.run(test_args)
@@ -433,14 +437,15 @@ test_scores = evaluate.run(test_args)
 from IPython.display import Image as ShowImage, display
 
 display(ShowImage(filename=str(OUTPUT_DIR / "gallery.png")))  # ready to share
+print((OUTPUT_DIR / "examples" / "README.md").read_text())
 """)
 
 # ---------------------------------------------------------------------------
 md("""
 ## 8. Download the trained model
 
-Zips `best.pt`, the tokenizer, the metrics and the test predictions
-(`last.pt` is left out: it is only needed to resume). Use it with the repo:
+Zips `best.pt`, the tokenizer, the metrics, the test predictions, the
+gallery and the examples table (`last.pt` is left out: it is only needed to resume). Use it with the repo:
 
 ```bash
 unzip bia-captioner-run.zip -d checkpoints/run
@@ -458,6 +463,8 @@ with tempfile.TemporaryDirectory() as tmp:
         if (OUTPUT_DIR / name).exists():
             shutil.copy(OUTPUT_DIR / name, bundle / name)
     shutil.copytree(OUTPUT_DIR / "tokenizer", bundle / "tokenizer")
+    if (OUTPUT_DIR / "examples").exists():
+        shutil.copytree(OUTPUT_DIR / "examples", bundle / "examples")
     archive = shutil.make_archive(str(OUTPUT_DIR.parent / "bia-captioner-run"), "zip", bundle)
 print("created", archive)
 
