@@ -1,17 +1,19 @@
 # Testing guide
 
-Four levels of checks, from seconds to an hour:
+Five levels of checks, from seconds to an hour:
 
 1. **Unit tests and sanity checks** (`pytest`): every module, CPU only, no network.
 2. **Synthetic shapes**: does the architecture learn to read images? (laptop CPU)
-3. **Overfit check on real photos**: can the model memorise 8 Flickr30k images?
-4. **Launch checks**: the real CLIs (`cap-train`, `cap-generate`, `cap-evaluate`,
+3. **Flowers**: does it caption real photos well after a short training? (laptop CPU)
+4. **Overfit check on real photos**: can the model memorise 8 Flickr30k images?
+5. **Launch checks**: the real CLIs (`cap-train`, `cap-generate`, `cap-evaluate`,
    `torchrun`), the notebook and the web app.
 
 ## 1. Unit tests and sanity checks
 
 ```bash
-pytest                       # everything (~1 min on a laptop CPU)
+pytest                       # everything (~3 min on a laptop CPU)
+pytest --cov=bia_captioner   # with line coverage
 pytest tests/test_model.py   # one file
 pytest -k beam -v            # tests whose name contains "beam"
 ruff check src tests         # lint
@@ -20,6 +22,8 @@ ruff format --check src tests
 
 No GPU and no internet needed: tests use tiny fake datasets, a tiny tokenizer,
 small models and randomly initialised encoders.
+The web-app tests run when the app extra is installed
+(`pip install -e '.[dev,app]'`) and are skipped otherwise.
 
 ### The neural-network sanity checks
 
@@ -29,8 +33,11 @@ automated test:
 | Check | Why it matters | Test |
 |---|---|---|
 | Initial loss ≈ ln(vocabulary) | a random model must be a uniform guesser; much higher means bad init / scaling | `test_initial_loss_is_close_to_random_guessing` |
+| Numerical gradient check | backprop agrees with finite differences for attention, encoder and decoder blocks (float64 `gradcheck`) | `test_analytic_gradients_match_numerical_gradients` |
+| Activation scale through depth | with 8 encoder + 8 decoder layers the residual stream neither explodes nor vanishes at init | `test_activations_keep_their_scale_through_depth_at_init` |
 | Overfit one batch | if it cannot memorise 2 captions, the loss, masks or optimiser are broken | `test_can_overfit_one_batch` |
 | Every trainable parameter gets a gradient (each encoder family) | dead layers waste compute and crash DDP | `test_every_trainable_parameter_receives_a_gradient` |
+| One optimizer step changes every trainable parameter, and no frozen one | no parameter forgotten in the optimizer groups; freezing really freezes | `test_one_optimizer_step_updates_every_trainable_parameter` |
 | No look-ahead | future tokens must not change past predictions (causal mask) | `test_causal_future_tokens_do_not_change_past_logits` |
 | Padding is invisible | pads must not change real tokens' outputs or the loss | `test_padding_does_not_change_real_token_logits`, `test_loss_is_finite_and_ignores_minus_100` |
 | Samples are independent | a reshape mixing batch and time axes, or BatchNorm in train mode, leaks across samples | `test_samples_in_a_batch_do_not_influence_each_other` |
@@ -42,11 +49,16 @@ automated test:
 | LR schedule | warmup and cosine values | `test_lr_lambda_*` |
 | Resume | a restarted run continues the step count and data order | `test_resume_continues_step_count` |
 | Multi-process | 2 DDP processes end with identical weights | `test_two_process_training_stays_in_sync` |
+| Memorise, then reproduce through the CLIs | `cap-train` memorises 8 images; `cap-generate` (beam and greedy) returns their exact captions from PNG files | `test_cap_generate_reproduces_a_memorised_caption` |
+| Data → tokens → text round trip | a caption encodes to `<bos> … <eos>` and decodes back to the same text | `test_encode_caption_round_trips` |
 
 ### What each file proves
 
 | File | What it proves |
 |------|----------------|
+| `test_tokenizer.py` | a dedicated pad token is added (pad ≠ EOS), BOS = EOS like GPT-2, captions round-trip, -100 labels are skipped by the loss |
+| `test_cli.py` | **end to end through the real commands**, offline: `cap-train` on shapes writes a complete run and lowers the loss; `cap-generate` reproduces memorised captions; `cap-evaluate` scores the test split and draws a gallery; `--overfit` memorises |
+| `test_app_and_notebook.py` | the notebook embeds exactly the current `src/` code and the committed notebook is up to date; every notebook cell is valid Python; the web app captions with beam search, greedy and sampling and reports a missing checkpoint |
 | `test_config.py` | invalid settings are rejected early (pad = EOS, unknown encoder, bad precision); every encoder name and dataset preset is valid; BIA-ViT is never "pretrained"; the encoder LR is 1e-5 when pretrained and the decoder LR when from scratch |
 | `test_data.py` | images become normalised `[3,H,W]` tensors (with the encoder's own mean / std); captions become `<bos> … <eos>`; truncation drops EOS; validation uses the first caption, training samples all of them; captions from one list column, several columns, or **one per row grouped by image id (COCO)**; the synthetic shapes are deterministic, differ between splits, and every color named in a caption is in the picture; the collator pads with -100 labels and does not shift them |
 | `test_metrics.py` | BLEU: perfect = 1, no overlap = 0, clipping, brevity penalty, a hand-computed BLEU-4 (also matches NLTK); exact match ignores case / punctuation |
@@ -91,6 +103,12 @@ Test split (500 images never seen in training), greedy decoding:
 | real images | 84.1 | **67.3** | **43.2%** |
 | images shuffled (`--shuffle-images`, the control) | 46.1 | 25.0 | 0.6% |
 
+(This control was measured with an earlier `--shuffle-images` that swapped
+images between neighbours of a batch; the shapes images are independent random
+draws, so the neighbour is as good as any other image. The current version
+uses a fixed random permutation of the whole split, which also works for
+datasets sorted by class.)
+
 The control is what proves the architecture works: given the *wrong* image the
 same model drops from 43% exact captions to 0.6%, so its captions come from
 the pixels, not from a memorised language pattern. The remaining BLEU of the
@@ -109,7 +127,52 @@ prediction: a small green triangle on the left and a small blue circle on the ri
 The full 8-epoch schedule (or a GPU) should push exact match much higher; that
 run was not completed here.
 
-## 3. Overfit sanity check (real photos)
+## 3. Flowers: real photos, quick results
+
+The "CIFAR-10 of captioning" ([datasets.md](datasets.md#2-flowers-the-cifar-10-of-captioning)):
+6 552 flower photos with one short caption each.
+
+```bash
+cap-train --dataset flowers --encoder resnet50 --freeze-encoder \
+          --d-model 256 --heads 4 --layers 3 --epochs 4 --batch-size 32 --lr 5e-4 \
+          --warmup-steps 100 --eval-every 184 --bleu-samples 200 --output-dir checkpoints/flowers
+cap-evaluate --checkpoint checkpoints/flowers/best.pt --split test --gallery flowers.png
+```
+
+Real run on a laptop CPU: ImageNet-pretrained ResNet-50 **frozen** (so only
+the 16.6M-parameter decoder trains), 4 epochs = 696 steps, ~75 minutes (the
+CPU was shared with other jobs). On a GPU, fine-tuning a ViT for more epochs
+should do better; that has not been run yet.
+
+| step | val loss | val token acc | val BLEU-4 (greedy, 200 images) |
+|-----:|---------:|--------------:|--------------------------------:|
+| 184  | 1.48     | 0.696         | 0.25 |
+| 368  | 0.86     | 0.785         | 0.35 |
+| 552  | 0.71     | 0.819         | 0.43 |
+| 696  | **0.69** | 0.826         | **0.44** |
+
+Test split (655 photos never used for training or model selection):
+
+| decoding | BLEU-1 | BLEU-4 | exact caption |
+|---|---:|---:|---:|
+| beam search (3) | 61.0 | 45.6 | 23.1% |
+| greedy | 65.4 | **47.7** | 19.9% |
+
+The test photos with their generated captions (`--gallery`, picks spread over
+the whole split):
+
+![Flowers test gallery](images/flowers_gallery.jpg)
+
+The model names the species (petunia, thorn apple, dahlia, primula, gazania,
+gentian, foxglove, ...) and notices details such as a bee on the flower; it
+still makes small language slips ("a bee on a bee"). The captions it learned
+from were themselves written by the BLIP model, so these scores measure how
+well it reproduces that captioner, not human judgement.
+
+Not run yet: the `--shuffle-images` control on flowers (the run was stopped
+when the laptop ran out of memory).
+
+## 4. Overfit sanity check (real photos)
 
 The single most useful test of a training pipeline: if the model cannot
 memorise a handful of images, something is broken (labels shifted twice,
@@ -142,7 +205,7 @@ reproduced the captions of the training images word for word, and
 What this does **not** tell you: how well the model captions *new* photos.
 That needs a full GPU run and the test-split BLEU (`cap-evaluate`).
 
-## 4. Launch checks
+## 5. Launch checks
 
 ```bash
 # training CLI, exit code must be 0 (the small BIA-ViT is fast on CPU)

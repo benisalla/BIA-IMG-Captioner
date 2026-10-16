@@ -40,6 +40,26 @@ DATASET_PRESETS: dict[str, dict[str, Any]] = {
     # 8k images of colored shapes, captions fully determined by the image.
     # The quickest proof that the architecture learns from pixels (minutes on a CPU).
     "shapes": {"dataset_id": SYNTHETIC, "caption_columns": ("caption",), "group_column": None},
+    # "The CIFAR-10 of captioning": 6 552 high-resolution flower photos, one short
+    # caption each (written by BLIP, so simple and consistent), ~0.3 GB. Learns in
+    # minutes on a GPU, and the pictures are nice to show. One split only:
+    # validation / test images are a seeded random 5% / 10% of it.
+    "flowers": {
+        "dataset_id": "pranked03/flowers-blip-captions",
+        "caption_columns": ("text",),
+        "group_column": None,
+        "holdout": (0.05, 0.10),
+    },
+    # CUB-200 birds: 5 994 photos of 200 species, ~10 human captions each about
+    # colors and body parts ("this bird has a red crown and a short black bill"),
+    # ~0.6 GB. One split only: validation / test are a seeded random 8% / 8%.
+    "birds": {
+        "dataset_id": "Multimodal-Fatima/CUB_train",
+        "caption_columns": ("description",),
+        "caption_separator": "\n",
+        "group_column": None,
+        "holdout": (0.08, 0.08),
+    },
     # 8 091 everyday photos, 5 captions each, 6k/1k/1k split, ~0.3 GB.
     "flickr8k": {
         "dataset_id": "jxie/flickr8k",
@@ -72,8 +92,14 @@ class DataConfig:
     image_column: str = "image"
     # One column holding a list of captions, or several columns with one caption each.
     caption_columns: tuple[str, ...] = ("original_alt_text",)
+    # A caption cell holding several captions joined by this string (e.g. "\n").
+    caption_separator: str | None = None
     # Rows sharing this column's value are one image (datasets with one caption per row).
     group_column: str | None = None
+    # For datasets with a single split: (validation, test) fractions carved out of
+    # `train_split` with a fixed random order; the splits are then named
+    # "train", "validation" and "test" as usual.
+    holdout: tuple[float, float] | None = None
     tokenizer_id: str = "openai-community/gpt2"
     cache_dir: Path | None = None  # Hugging Face cache, None = library default
     train_split: str = "train"
@@ -88,10 +114,17 @@ class DataConfig:
 
     def __post_init__(self) -> None:
         # Checkpoints store tuples as lists; turn them back into tuples.
-        for name in ("caption_columns", "image_mean", "image_std"):
-            object.__setattr__(self, name, tuple(getattr(self, name)))
+        for name in ("caption_columns", "image_mean", "image_std", "holdout"):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, tuple(getattr(self, name)))
         if not self.caption_columns:
             raise ValueError("caption_columns must name at least one column")
+        if self.holdout is not None and not (
+            len(self.holdout) == 2
+            and all(0 < f < 1 for f in self.holdout)
+            and sum(self.holdout) < 1
+        ):
+            raise ValueError("holdout must be two fractions in (0, 1) summing to less than 1")
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         if self.max_tokens < 2:
@@ -99,7 +132,7 @@ class DataConfig:
 
 
 def data_config_for(dataset: str, **overrides: Any) -> DataConfig:
-    """DataConfig for a preset name ("shapes", "flickr8k", "flickr30k", "coco")."""
+    """DataConfig for a preset name (see DATASET_PRESETS)."""
     if dataset not in DATASET_PRESETS:
         raise ValueError(f"unknown dataset {dataset!r}; choose from {list(DATASET_PRESETS)}")
     return replace(DataConfig(), **{**DATASET_PRESETS[dataset], **overrides})

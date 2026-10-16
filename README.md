@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org)
-[![Dataset: Flickr30k](https://img.shields.io/badge/dataset-Flickr30k-orange.svg)](https://huggingface.co/datasets/AnyModal/flickr30k)
+[![Datasets](https://img.shields.io/badge/datasets-shapes%20%C2%B7%20flowers%20%C2%B7%20birds%20%C2%B7%20Flickr%20%C2%B7%20COCO-orange.svg)](docs/datasets.md)
 
 An image-captioning model in plain PyTorch: an image encoder turns the photo
 into a set of "image tokens", and a hand-written Transformer decoder writes the
@@ -24,9 +24,15 @@ flowchart LR
     NEXT -. "append and repeat until EOS<br/>(greedy, sampling or beam search)" .-> TXT
 ```
 
-> **No trained weights are published yet.** Train a model first (steps 3–5
-> below, or the Kaggle/Colab notebook); a checkpoint is then saved in
-> `checkpoints/`.
+![Captions written by the model for unseen test photos](docs/images/flowers_gallery.jpg)
+
+*Captions generated for **unseen test photos** (black) next to a reference
+caption (grey). Model: frozen ImageNet ResNet-50 + a 16.6M-parameter decoder
+trained for 4 epochs on the `flowers` dataset on a laptop CPU; test BLEU-4
+47.7 (see [docs/testing.md](docs/testing.md#3-flowers-real-photos-quick-results)).*
+
+> **No trained weights are published.** Train a model first (steps 3–5 below,
+> or the Kaggle/Colab notebook); a checkpoint is then saved in `checkpoints/`.
 
 ## Quick start
 
@@ -36,7 +42,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'          # see docs/training.md for GPU / CPU-only torch
 
-# 2. unit tests and neural-network sanity checks (CPU, no network, ~1 min)
+# 2. unit tests and neural-network sanity checks (CPU, no network, ~3 min)
 pytest
 
 # 3. prove the architecture learns from pixels: synthetic shapes, no download, laptop CPU
@@ -73,9 +79,15 @@ trains only the decoder. Details in [docs/training.md](docs/training.md#2-choose
 
 ## Datasets: from a 2-minute proof to real-world photos
 
+Like CIFAR-10 for classifiers: once the model does well on the small, simple
+datasets, scaling to open-domain photos is a matter of data, model size and
+compute.
+
 | `--dataset` | Images | Download | Use it to |
 |---|---|---|---|
 | `shapes` | 8 000 generated shapes, caption determined by the image | none | prove the architecture reads the image (laptop CPU) |
+| **`flowers`** | 6 552 high-quality flower photos, 1 simple caption each | 0.3 GB | **the "CIFAR-10 of captioning"**: real photos, good results fast, nice to show |
+| `birds` | 5 994 bird photos (CUB-200), ~10 human captions each | 0.6 GB | the "CIFAR-100": fine-grained human descriptions |
 | `flickr8k` | 8 091 photos, 5 captions each | 0.3 GB | first real-photo runs, quick tuning |
 | `flickr30k` (default) | 31 014 photos, 5 captions each | 4.3 GB | the default benchmark |
 | `coco` | 123 287 photos, ~5 captions each | 21 GB | the reference benchmark (compare with papers) |
@@ -88,22 +100,28 @@ VizWiz) and for using any other Hugging Face dataset, see
 
 Everything below was run on a laptop CPU (no GPU), see [docs/testing.md](docs/testing.md):
 
-- **102 unit tests**, including the standard neural-network sanity checks:
-  initial loss = ln(vocab), every parameter gets a gradient, no information
-  leaks from future tokens or between samples of a batch, padding is ignored,
-  dropout is off in eval, bf16 is stable, the model overfits one batch, same
-  seed = same run, gradient accumulation = one big batch.
+- **143 tests (96% line coverage)**, including the standard neural-network sanity checks:
+  initial loss = ln(vocab), numerical gradient check, activations stay scaled
+  through depth, every parameter gets a gradient and is updated, no
+  information leaks from future tokens or between samples of a batch, padding
+  is ignored, dropout is off in eval, bf16 is stable, the model overfits one
+  batch, same seed = same run, gradient accumulation = one big batch, and
+  `cap-train` → `cap-generate` → `cap-evaluate` end to end.
 - **The architecture reads images**: BIA-ViT trained from scratch on the
   synthetic shapes for only 2 epochs captions 500 *unseen* test images with
   BLEU-4 67.3 and 43.2% exact captions; given shuffled images the same model
   falls to 0.6% exact, so the captions come from the pixels.
+- **Real photos, short training**: on `flowers`, a frozen pretrained ResNet-50
+  with the Transformer decoder reaches **BLEU-4 47.7** on 655 unseen test
+  photos after 4 epochs on a CPU, and names the species in its captions
+  (gallery above).
 - **Real photos, overfit check**: pretrained ViT-B/16 memorised 8 Flickr30k
   images (val loss 0.012, BLEU-4 1.00); `cap-generate` reproduced their
   captions word for word after reloading.
 - **Notebook, multi-GPU (DDP) launch, resume, CLIs and web app** run end to end.
 
-Not done yet: a full training run on a GPU, so there is no Flickr30k / COCO
-test score yet. The notebook is the quickest way to get one.
+Not done yet: a GPU training run, so there is no Flickr30k / COCO test score
+yet. The notebook is the quickest way to get one.
 
 ## What changed from the first version
 
@@ -143,10 +161,10 @@ src/bia_captioner/     the package (read in this order)
   data.py              Hugging Face caption datasets, synthetic shapes, transforms, collator
   model.py             encoders (BIA-ViT, torchvision ViT / ResNet, Hugging Face) +
                        Transformer decoder, loss, greedy / sampling generate(), beam_search()
-  metrics.py           corpus BLEU-1..4 (no extra dependency)
+  metrics.py           corpus BLEU-1..4 and exact match (no extra dependency)
   train.py             training loop: AMP, grad accumulation, DDP, checkpoints, CLI
   generate.py          inference CLI: checkpoint + images -> captions
-  evaluate.py          BLEU of a checkpoint on a held-out split
+  evaluate.py          BLEU of a checkpoint on a held-out split, shareable gallery
 app/streamlit_app.py   web demo
 notebooks/             Kaggle / Colab notebook (+ the script that builds it from src/)
 tests/                 pytest suite (CPU only, offline)

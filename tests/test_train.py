@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from bia_captioner.config import DataConfig, ModelConfig, TrainConfig
 from bia_captioner.train import (
     LAST_CHECKPOINT,
+    DistInfo,
     build_dataloaders,
     build_optimizer,
     build_parser,
@@ -20,10 +21,14 @@ from bia_captioner.train import (
     configs_from_args,
     count_correct,
     evaluate,
+    format_lrs,
+    get_dist_info,
+    local_main_first,
     lr_lambda,
     model_sizes_from_args,
     resolve_device,
     resolve_precision,
+    setup_distributed,
     train,
 )
 
@@ -210,8 +215,27 @@ def test_resolve_precision_on_cpu() -> None:
         resolve_precision("fp16", cpu)
 
 
-def test_resolve_device_explicit() -> None:
+def test_resolve_device() -> None:
     assert resolve_device("cpu") == torch.device("cpu")
+    assert resolve_device("auto").type in {"cpu", "cuda", "mps"}
+
+
+def test_single_process_helpers_are_no_ops(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    info = setup_distributed("cpu")
+    assert info == DistInfo() == get_dist_info()
+    assert info.is_main and not info.enabled
+    with local_main_first(info):  # no barrier without a process group
+        pass
+    assert DistInfo(rank=1, world_size=2).enabled and not DistInfo(rank=1, world_size=2).is_main
+
+
+def test_format_lrs_names_each_group() -> None:
+    optimizer = torch.optim.SGD(
+        [{"params": [nn.Parameter(torch.zeros(1))], "lr": 1e-3, "name": "decoder"},
+         {"params": [nn.Parameter(torch.zeros(1))], "lr": 1e-5, "name": "encoder"}],
+    )  # fmt: skip
+    assert format_lrs(optimizer) == "decoder 1.0e-03 encoder 1.0e-05"
 
 
 def test_overfit_flag_reuses_train_split_and_disables_regularisation() -> None:
@@ -242,6 +266,14 @@ def test_dataset_preset_and_overrides_reach_the_data_config() -> None:
     data_config, _ = configs_from_args(args)
     assert data_config.dataset_id == "jxie/flickr8k"
     assert (data_config.caption_columns, data_config.image_size) == (("a", "b"), 128)
+
+
+def test_holdout_and_separator_flags() -> None:
+    args = build_parser().parse_args(
+        ["--dataset-id", "u/d", "--caption-separator", "|", "--holdout", "0.1", "0.2"]
+    )
+    data_config, _ = configs_from_args(args)
+    assert (data_config.caption_separator, data_config.holdout) == ("|", (0.1, 0.2))
 
 
 def test_from_scratch_flag_disables_pretrained_weights() -> None:

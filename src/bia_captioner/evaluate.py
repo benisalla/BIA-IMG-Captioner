@@ -12,11 +12,13 @@ import argparse
 import dataclasses
 import json
 import logging
+import textwrap
 from collections.abc import Sequence
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from PIL import Image, ImageDraw, ImageFont
+from torch.utils.data import DataLoader, Subset
 
 from bia_captioner.data import CaptionCollator, build_dataset
 from bia_captioner.generate import load_model, load_tokenizer
@@ -41,19 +43,20 @@ def predict(
 ) -> list[str]:
     """Caption every image of the dataset, in order.
 
-    shuffle_images=True is a sanity check: each caption is generated from the
-    *next* image of the batch, so scores must collapse if the model really
-    reads the image (and stay the same if it only learned the language).
+    shuffle_images=True is a sanity check: caption i is generated from another,
+    randomly chosen image of the split (a fixed random permutation), so scores
+    must collapse if the model really reads the image and stay the same if it
+    only learned the language.
     """
+    if shuffle_images:
+        dataset = Subset(dataset, shuffled_order(len(dataset)))
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
         collate_fn=CaptionCollator(pad_token_id=tokenizer.pad_token_id),
     )  # fmt: skip
     captions: list[str] = []
-    for batch_index, batch in enumerate(loader):
+    for batch in loader:
         pixel_values = batch["pixel_values"].to(device)
-        if shuffle_images:
-            pixel_values = pixel_values.roll(1, dims=0)
         with autocast(device, amp_dtype):
             if beam_size > 1:  # beam search works on one image at a time
                 sequences = [
@@ -69,6 +72,58 @@ def predict(
     return captions
 
 
+def shuffled_order(n: int, seed: int = 0) -> list[int]:
+    """For each image i, another image to take its pixels from (fixed, random).
+
+    The images are put in a random cycle and each one takes the next one's
+    place, so no image is ever paired with itself.
+    """
+    cycle = torch.randperm(n, generator=torch.Generator().manual_seed(seed)).tolist()
+    source = list(range(n))
+    for k, image in enumerate(cycle):
+        source[image] = cycle[(k + 1) % n]
+    return source
+
+
+def spread_indices(n: int, count: int) -> list[int]:
+    """`count` indices spread evenly over range(n) (datasets are often sorted by class)."""
+    count = min(count, n)
+    return sorted({round(i * (n - 1) / max(count - 1, 1)) for i in range(count)})
+
+
+def save_gallery(
+    images: Sequence[Image.Image],
+    predictions: Sequence[str],
+    references: Sequence[Sequence[str]],
+    path: Path,
+    columns: int = 4,
+    tile: int = 320,
+) -> None:
+    """Grid of images with the model's caption (and one human caption) under each.
+
+    Made to be shared: a README, a slide or a post.
+    """
+    font = ImageFont.load_default(size=17)
+    small = ImageFont.load_default(size=14)
+    chars = int(tile / 8.6)  # characters per line at these font sizes
+    text_height = 84
+    rows = -(-len(images) // columns)
+    sheet = Image.new("RGB", (columns * tile, rows * (tile + text_height)), "white")
+    draw = ImageDraw.Draw(sheet)
+    for i, (image, prediction, refs) in enumerate(zip(images, predictions, references)):
+        x, y = (i % columns) * tile, (i // columns) * (tile + text_height)
+        side = min(image.size)  # centre square crop, like a thumbnail
+        left, top = (image.width - side) // 2, (image.height - side) // 2
+        square = image.convert("RGB").crop((left, top, left + side, top + side))
+        sheet.paste(square.resize((tile - 8, tile - 8), Image.LANCZOS), (x + 4, y + 4))
+        lines = textwrap.wrap(prediction, chars)[:3]
+        draw.multiline_text((x + 8, y + tile), "\n".join(lines), fill="black", font=font)
+        human = textwrap.shorten("human: " + refs[0], width=int(chars * 1.2), placeholder="...")
+        draw.text((x + 8, y + tile + 18 * len(lines) + 6), human, fill=(110, 110, 110), font=small)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="BLEU evaluation of a trained BIA captioner.")
     p.add_argument("--checkpoint", type=Path, required=True)
@@ -80,6 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--cache-dir", type=Path, default=None)
     p.add_argument("--output", type=Path, default=None, help="write scores + predictions (JSON)")
+    p.add_argument("--gallery", type=Path, default=None, help="save a captioned image grid (PNG)")
+    p.add_argument("--gallery-size", type=int, default=12, help="images in the gallery")
     p.add_argument(
         "--shuffle-images", action="store_true",
         help="sanity check: caption each image from another image's pixels (scores must drop)",
@@ -125,6 +182,15 @@ def run(argv: Sequence[str] | None = None, dataset_loader=None) -> dict[str, flo
         rows = [{"prediction": p, "references": r} for p, r in zip(predictions, references)]
         args.output.write_text(json.dumps({"scores": scores, "predictions": rows}, indent=2))
         logger.info("wrote %s", args.output)
+    if args.gallery is not None:
+        picks = spread_indices(len(dataset), args.gallery_size)
+        save_gallery(
+            [dataset.image(i) for i in picks],
+            [predictions[i] for i in picks],
+            [references[i] for i in picks],
+            args.gallery,
+        )
+        logger.info("wrote %s", args.gallery)
     return scores
 
 

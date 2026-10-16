@@ -766,7 +766,12 @@ def build_parser() -> argparse.ArgumentParser:
     data.add_argument("--dataset-id", default=None, help="Hugging Face dataset id")
     data.add_argument("--image-column", default=None)
     data.add_argument("--caption-columns", nargs="+", default=None)
+    data.add_argument("--caption-separator", default=None, help="split caption cells on it")
     data.add_argument("--group-column", default=None, help="rows sharing it are one image")
+    data.add_argument(
+        "--holdout", type=float, nargs=2, metavar=("VAL", "TEST"), default=None,
+        help="single-split dataset: fractions held out as validation / test",
+    )  # fmt: skip
     data.add_argument("--tokenizer-id", default=d.tokenizer_id)
     data.add_argument("--cache-dir", type=Path, default=d.cache_dir)
     data.add_argument("--train-split", default=d.train_split)
@@ -830,7 +835,9 @@ def configs_from_args(args: argparse.Namespace) -> tuple[DataConfig, TrainConfig
         "dataset_id": args.dataset_id,
         "image_column": args.image_column,
         "caption_columns": tuple(args.caption_columns) if args.caption_columns else None,
+        "caption_separator": args.caption_separator,
         "group_column": args.group_column,
+        "holdout": tuple(args.holdout) if args.holdout else None,
     }
     data_config = data_config_for(
         args.dataset,

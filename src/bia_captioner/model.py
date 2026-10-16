@@ -316,7 +316,8 @@ class ImageCaptioner(nn.Module):
         self.image_norm = nn.LayerNorm(d_model)
 
         # ---- Text decoder --------------------------------------------------
-        # padding_idx: the embedding lookup never sends gradient to the pad row.
+        # padding_idx: the input lookup never sends gradient to the pad row (the tied
+        # output head still does: it learns that pad is never the next token).
         self.token_embedding = nn.Embedding(
             config.vocab_size, d_model, padding_idx=config.pad_token_id
         )
@@ -361,7 +362,7 @@ class ImageCaptioner(nn.Module):
         if isinstance(self.encoder, BIAViT):
             nn.init.normal_(self.encoder.position, mean=0.0, std=INIT_STD)
         with torch.no_grad():
-            self.token_embedding.weight[self.config.pad_token_id].zero_()  # pad = zero vector
+            self.token_embedding.weight[self.config.pad_token_id].zero_()  # pad starts at zero
 
     # -------------------------------------------------------------- freezing
     def freeze_encoder(self, frozen: bool = True) -> None:

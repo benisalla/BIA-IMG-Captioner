@@ -127,3 +127,34 @@ def test_evaluate_with_shuffled_images_runs(tmp_path: Path) -> None:
         dataset_loader=lambda *a, **k: FakeSplit(rows),
     )  # fmt: skip
     assert 0.0 <= scores["exact_match"] <= 1.0
+
+
+def test_evaluate_writes_a_gallery(tmp_path: Path) -> None:
+    path, _ = write_checkpoint(tmp_path / "run")
+    rows = [{"image": Image.new("RGB", (60, 40), c), "original_alt_text": ["a dog runs"]}
+            for c in ("white", "black", "red")]  # fmt: skip
+    gallery = tmp_path / "gallery.png"
+    evaluate.run(
+        ["--checkpoint", str(path), "--device", "cpu", "--num-workers", "0", "--beam-size", "1",
+         "--gallery", str(gallery), "--gallery-size", "2"],
+        dataset_loader=lambda *a, **k: FakeSplit(rows),
+    )  # fmt: skip
+    image = Image.open(gallery)
+    assert image.size[0] == 4 * 320 and image.size[1] > 320  # one row of 4 tiles + text
+
+
+def test_shuffled_order_never_keeps_an_image_and_is_fixed() -> None:
+    from bia_captioner.evaluate import shuffled_order
+
+    order = shuffled_order(50)
+    assert sorted(order) == list(range(50))  # a permutation
+    assert all(order[i] != i for i in range(50))  # nobody keeps its own image
+    assert order == shuffled_order(50)
+    assert max(abs(order[i] - i) for i in range(50)) > 10  # far apart, not neighbours
+
+
+def test_gallery_picks_are_spread_over_the_split() -> None:
+    from bia_captioner.evaluate import spread_indices
+
+    assert spread_indices(655, 4) == [0, 218, 436, 654]
+    assert spread_indices(3, 12) == [0, 1, 2]

@@ -15,6 +15,7 @@ from bia_captioner.data import (
     as_caption_list,
     build_dataset,
     build_image_transform,
+    holdout_indices,
     render_shapes,
     to_rgb_image,
 )
@@ -225,3 +226,48 @@ def test_collator_pads_and_masks_labels() -> None:
     assert torch.equal(batch["labels"][0, :4], batch["input_ids"][0, :4])
     # Longest sequence has no padding, so labels equal inputs (no shift).
     assert torch.equal(batch["labels"][1], batch["input_ids"][1])
+
+
+def test_caption_separator_splits_joined_captions() -> None:
+    # CUB birds store ~10 captions in one newline-joined string.
+    assert as_caption_list("a red bird.\nit has a short beak\n", "\n") == [
+        "a red bird.",
+        "it has a short beak",
+    ]
+    assert as_caption_list("a red bird.\nit has a short beak") == [
+        "a red bird. it has a short beak"
+    ]
+
+
+def test_holdout_splits_are_disjoint_complete_and_fixed() -> None:
+    parts = {s: holdout_indices(1000, (0.05, 0.1), s) for s in ("train", "validation", "test")}
+    assert [len(parts[s]) for s in ("train", "validation", "test")] == [850, 50, 100]
+    assert sorted(parts["train"] + parts["validation"] + parts["test"]) == list(range(1000))
+    assert parts == {s: holdout_indices(1000, (0.05, 0.1), s) for s in parts}  # same every time
+    # Shuffled before splitting: datasets sorted by class still get every class in each split.
+    assert max(parts["validation"]) - min(parts["validation"]) > 500
+    with pytest.raises(ValueError, match="splits are"):
+        holdout_indices(10, (0.1, 0.1), "val")
+
+
+def test_holdout_dataset_reads_one_split_and_cuts_it() -> None:
+    rows = [{"image": Image.new("RGB", (8, 8)), "text": f"flower {i}"} for i in range(40)]
+    calls = []
+
+    def loader(dataset_id: str, split: str, cache_dir: Any) -> FakeSplit:
+        calls.append(split)
+        return FakeSplit(rows)
+
+    config = DataConfig(image_size=16, caption_columns=("text",), holdout=(0.1, 0.25))
+    sizes = {
+        split: len(CaptionDataset(config, FakeTokenizer(), split, dataset_loader=loader))
+        for split in ("train", "validation", "test")
+    }
+    assert sizes == {"train": 26, "validation": 4, "test": 10}
+    assert set(calls) == {"train"}  # only the one real split is ever loaded
+
+
+def test_flowers_and_birds_presets() -> None:
+    flowers, birds = data_config_for("flowers"), data_config_for("birds")
+    assert flowers.holdout is not None and flowers.caption_columns == ("text",)
+    assert birds.caption_separator == "\n" and birds.holdout is not None

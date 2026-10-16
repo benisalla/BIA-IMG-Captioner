@@ -72,10 +72,33 @@ def to_rgb_image(image: Any) -> Image.Image:
     return Image.fromarray(array).convert("RGB")
 
 
-def as_caption_list(value: Any) -> list[str]:
-    """A caption cell may hold one string or a list of strings; always return a list."""
+def as_caption_list(value: Any, separator: str | None = None) -> list[str]:
+    """A caption cell may hold one string, several joined by `separator`, or a list."""
     captions = [value] if isinstance(value, str) else list(value)
+    if separator is not None:
+        captions = [part for c in captions for part in c.split(separator)]
     return [clean_caption(c) for c in captions if c and c.strip()]
+
+
+HOLDOUT_SEED = 0  # fixed: the same images are held out on every machine and every run
+
+
+def holdout_indices(n: int, holdout: tuple[float, float], split: str) -> list[int]:
+    """Rows of a single-split dataset that belong to "train", "validation" or "test".
+
+    A fixed random permutation (rows are often sorted by class), then the first
+    `holdout[0]` fraction is validation, the next `holdout[1]` is test, the rest train.
+    """
+    order = np.random.RandomState(HOLDOUT_SEED).permutation(n).tolist()
+    n_val, n_test = round(n * holdout[0]), round(n * holdout[1])
+    parts = {
+        "validation": order[:n_val],
+        "test": order[n_val : n_val + n_test],
+        "train": order[n_val + n_test :],
+    }
+    if split not in parts:
+        raise ValueError(f"with a holdout the splits are {list(parts)}, not {split!r}")
+    return sorted(parts[split])  # sorted: faster reads from the underlying files
 
 
 class _CaptionedImages(Dataset[dict[str, torch.Tensor]]):
@@ -130,14 +153,22 @@ class CaptionDataset(_CaptionedImages):
 
         # The loader is injectable so tests can run without the network.
         cache_dir = str(config.cache_dir) if config.cache_dir else None
-        self.samples = dataset_loader(config.dataset_id, split=split, cache_dir=cache_dir)
+        if config.holdout is None:
+            self.samples = dataset_loader(config.dataset_id, split=split, cache_dir=cache_dir)
+        else:  # one split on disk, cut into train / validation / test here
+            full = dataset_loader(config.dataset_id, split=config.train_split, cache_dir=cache_dir)
+            self.samples = full.select(holdout_indices(len(full), config.holdout, split))
         if limit is not None and config.group_column is None:
             # Keep only the first `limit` images (handy for quick overfit runs).
             self.samples = self.samples.select(range(min(limit, len(self.samples))))
 
         # Read the caption columns once: cheap (no image decoding) and needed for BLEU.
         columns = [list(self.samples[name]) for name in config.caption_columns]
-        per_row = [[c for cell in cells for c in as_caption_list(cell)] for cells in zip(*columns)]
+        separator = config.caption_separator
+        per_row = [
+            [c for cell in cells for c in as_caption_list(cell, separator)]
+            for cells in zip(*columns)
+        ]
         if config.group_column is None:
             self.rows = list(range(len(per_row)))
             self.captions = per_row
@@ -297,6 +328,7 @@ __all__ = [
     "as_caption_list",
     "build_dataset",
     "build_image_transform",
+    "holdout_indices",
     "render_shapes",
     "to_rgb_image",
 ]

@@ -111,6 +111,8 @@ md("""
 | `DATASET` | Images | What for |
 |---|---|---|
 | `"shapes"` | 8 000 generated shapes, no download | prove the architecture learns from pixels (minutes) |
+| `"flowers"` | 6 552 flower photos, 1 simple caption each, ~0.3 GB | the "CIFAR-10 of captioning": good results fast, nice to show |
+| `"birds"` | 5 994 bird photos, ~10 human captions each, ~0.6 GB | fine-grained human descriptions |
 | `"flickr8k"` | 8 091 photos, ~0.3 GB | first real-photo run, fast |
 | `"flickr30k"` | 31 014 photos, ~4.3 GB | the default real benchmark |
 | `"coco"` | 123 287 photos, ~21 GB | the standard benchmark; Kaggle disk is tight, Colab Pro / own GPU |
@@ -143,7 +145,7 @@ import torch
 from bia_captioner.config import TrainConfig, data_config_for
 
 SMOKE_TEST = False          # True = tiny quick check of the whole notebook
-DATASET = "flickr30k"       # "shapes" | "flickr8k" | "flickr30k" | "coco"
+DATASET = "flowers"         # "shapes" | "flowers" | "birds" | "flickr8k" | "flickr30k" | "coco"
 ENCODER = "vit_b_16"        # "bia-vit" | "vit_b_16" | "resnet50" | "hf:<model id>" ...
 PRETRAINED = True           # False = train the encoder from scratch
 FREEZE_ENCODER = False      # True = train only the decoder
@@ -412,18 +414,25 @@ plt.show()
 """)
 
 md("""
-### 7.2 BLEU on the test split
+### 7.2 BLEU on the test split, and a shareable gallery
 
 The test split was never used for training or model selection. Beam size 3.
+`gallery.png` shows test photos with the model's captions (and one human
+caption in grey): ready for a README or a post.
 """)
 code("""
 from bia_captioner import evaluate
 
 test_args = ["--checkpoint", str(OUTPUT_DIR / T.BEST_CHECKPOINT), "--split", "test",
-             "--beam-size", "3", "--output", str(OUTPUT_DIR / "test_predictions.json")]
+             "--beam-size", "3", "--output", str(OUTPUT_DIR / "test_predictions.json"),
+             "--gallery", str(OUTPUT_DIR / "gallery.png")]
 if SMOKE_TEST:
     test_args += ["--limit", "16"]
 test_scores = evaluate.run(test_args)
+
+from IPython.display import Image as ShowImage, display
+
+display(ShowImage(filename=str(OUTPUT_DIR / "gallery.png")))  # ready to share
 """)
 
 # ---------------------------------------------------------------------------
@@ -445,7 +454,7 @@ import tempfile
 with tempfile.TemporaryDirectory() as tmp:
     bundle = Path(tmp) / "bundle"
     bundle.mkdir()
-    for name in [T.BEST_CHECKPOINT, "metrics.json", "test_predictions.json"]:
+    for name in [T.BEST_CHECKPOINT, "metrics.json", "test_predictions.json", "gallery.png"]:
         if (OUTPUT_DIR / name).exists():
             shutil.copy(OUTPUT_DIR / name, bundle / name)
     shutil.copytree(OUTPUT_DIR / "tokenizer", bundle / "tokenizer")

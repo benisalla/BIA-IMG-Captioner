@@ -52,7 +52,7 @@ The biggest problems, in order of impact:
 | `Encoder` | pre-norm blocks with no final LayerNorm: the output scale grows with depth | final `LayerNorm` in `BIAViT` |
 | `Encoder`: init of `c_proj.weight` | no parameter has that name, so the scaled residual init never ran | scaled init on `out_proj` / `fc2` |
 | `BIAImgCaptioner.init_weights` | Xavier init overwrote the N(0, 0.02) init of the decoder, including the tied embedding | one consistent GPT-2 style init |
-| `Decoder`: `pte(idx) * sqrt(n_emb)` with tied output weights | scaling ×22.6 of an embedding shared with the output layer | no scaling (GPT-2 style), pad row fixed at zero |
+| `Decoder`: `pte(idx) * sqrt(n_emb)` with tied output weights | scaling ×22.6 of an embedding shared with the output layer | no scaling (GPT-2 style), pad row initialised to zero |
 | `BIAConv2DEmbedding.cls_token` | created, initialised, never used | removed |
 | `im_size = 225`, `p_size = 16` | 225 is not a multiple of 16: the last pixel row/column is silently dropped | 224; `BIAViT` rejects sizes that are not a multiple of the patch |
 | hand-written `bmm` attention | slow, materialises the full attention matrix | `F.scaled_dot_product_attention` (Flash / memory-efficient kernels) |

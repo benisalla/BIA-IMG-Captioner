@@ -88,3 +88,51 @@ def test_encoder_lr_defaults_depend_on_how_the_encoder_starts() -> None:
 
 def test_config_to_dict_stringifies_paths() -> None:
     assert config_to_dict(TrainConfig(output_dir=Path("a/b")))["output_dir"] == "a/b"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"caption_columns": ()}, "caption_columns"),
+        ({"holdout": (0.5, 0.6)}, "holdout"),
+        ({"holdout": (0.0, 0.1)}, "holdout"),
+        ({"image_size": 0}, "image_size"),
+        ({"max_tokens": 1}, "max_tokens"),
+    ],
+)
+def test_invalid_data_config_is_rejected(overrides: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        DataConfig(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"vocab_size": 0}, "vocab_size"),
+        ({"dropout": 1.0}, "dropout"),
+    ],
+)
+def test_invalid_model_config_is_rejected(overrides: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        make_model_config(**overrides)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"batch_size": 0}, "batch_size"),
+        ({"grad_accum_steps": 0}, "grad_accum_steps"),
+        ({"epochs": 0}, "epochs"),
+        ({"encoder_lr": -1.0}, "encoder_lr"),
+    ],
+)
+def test_invalid_train_config_is_rejected(overrides: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        TrainConfig(**overrides)
+
+
+def test_configs_are_frozen() -> None:
+    import dataclasses
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        TrainConfig().lr = 1.0  # type: ignore[misc]

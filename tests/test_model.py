@@ -330,6 +330,64 @@ def test_bf16_autocast_gives_finite_loss_close_to_fp32() -> None:
     assert torch.isfinite(bf16) and abs(bf16.item() - fp32.item()) < 0.05
 
 
+def test_analytic_gradients_match_numerical_gradients() -> None:
+    # torch.autograd.gradcheck compares backprop with finite differences (float64):
+    # it catches hand-written ops whose backward is wrong.
+    from bia_captioner.model import DecoderBlock, EncoderBlock, MultiHeadAttention
+
+    torch.manual_seed(0)
+    x = torch.randn(2, 5, 8, dtype=torch.float64, requires_grad=True)
+    memory = torch.randn(2, 3, 8, dtype=torch.float64, requires_grad=True)
+    attention = MultiHeadAttention(8, heads=2, dropout=0.0).double()
+    assert torch.autograd.gradcheck(lambda a: attention(a, causal=True), (x,))
+    assert torch.autograd.gradcheck(lambda a, m: attention(a, context=m), (x, memory))
+    encoder_block = EncoderBlock(8, heads=2, mult=2, dropout=0.0).double()
+    decoder_block = DecoderBlock(8, heads=2, mult=2, dropout=0.0).double()
+    assert torch.autograd.gradcheck(encoder_block, (x,))
+    assert torch.autograd.gradcheck(decoder_block, (x, memory))
+
+
+def test_activations_keep_their_scale_through_depth_at_init() -> None:
+    # Exploding / vanishing activations at init make training slow or unstable;
+    # pre-norm blocks with scaled residual init keep the residual stream bounded.
+    model = make_model(decoder_layers=8, encoder_layers=8)
+    scales = []
+    hooks = [
+        block.register_forward_hook(lambda _m, _i, out: scales.append(out.std().item()))
+        for block in [*model.encoder.blocks, *model.blocks]
+    ]
+    model(images(), torch.randint(3, 50, (2, 10)))
+    for hook in hooks:
+        hook.remove()
+    encoder, decoder = scales[:8], scales[8:]
+    for stream in (encoder, decoder):
+        assert max(stream) / min(stream) < 2.0, stream
+    logits, _ = model(images(), torch.randint(3, 50, (2, 10)))
+    assert logits.std().item() < 1.0  # near-uniform predictions at init
+
+
+def test_one_optimizer_step_updates_every_trainable_parameter() -> None:
+    # Complements the gradient-flow check: the optimizer really sees every
+    # parameter (none forgotten in the parameter groups) and frozen ones stay put.
+    model = make_model(encoder="resnet18")
+    model.freeze_encoder(True)
+    model.train()
+    before = {n: p.detach().clone() for n, p in model.named_parameters()}
+    optimizer = torch.optim.AdamW(model.parameter_groups(0.01, lr=1e-2, encoder_lr=1e-2))
+    ids = torch.randint(3, 50, (2, 6))
+    _, loss = model(images(), ids, ids.clone())
+    loss.backward()
+    optimizer.step()
+    for name, param in model.named_parameters():
+        changed = not torch.equal(before[name], param.detach())
+        if name.startswith("encoder."):
+            assert not changed, f"frozen {name} changed"
+        else:
+            # (This includes the pad row of the tied embedding: padding_idx blocks the
+            # input-lookup gradient, but the tied output head still learns "never pad".)
+            assert changed, f"{name} did not change"
+
+
 # --- pretrained vs from scratch ------------------------------------------------
 
 
@@ -356,6 +414,27 @@ def test_pretrained_flag_controls_the_weights_that_are_loaded(
 def test_pretrained_vit_needs_its_native_image_size() -> None:
     with pytest.raises(ValueError, match="expects --image-size 224"):
         ImageCaptioner(make_config(encoder="vit_b_16", pretrained=True), image_size=64)
+
+
+def test_normalisation_follows_the_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    import transformers
+
+    from bia_captioner.config import IMAGENET_MEAN, IMAGENET_STD
+    from bia_captioner.model import encoder_normalization
+
+    for encoder in ("bia-vit", "resnet50", "vit_b_16"):
+        assert encoder_normalization(make_config(encoder=encoder)) == (IMAGENET_MEAN, IMAGENET_STD)
+
+    class FakeProcessor:
+        image_mean, image_std = [0.48, 0.46, 0.41], [0.27, 0.26, 0.28]  # CLIP-like
+
+    monkeypatch.setattr(
+        transformers.AutoImageProcessor, "from_pretrained", lambda *a, **k: FakeProcessor()
+    )
+    mean, std = encoder_normalization(make_config(encoder="hf:openai/clip"))
+    assert (mean, std) == ((0.48, 0.46, 0.41), (0.27, 0.26, 0.28))
+    FakeProcessor.image_mean = None  # a processor without statistics -> ImageNet
+    assert encoder_normalization(make_config(encoder="hf:x/y"))[0] == IMAGENET_MEAN
 
 
 def tiny_hf_vit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -390,7 +469,7 @@ def test_hugging_face_encoder_from_scratch(monkeypatch: pytest.MonkeyPatch) -> N
     assert all(p.grad is not None for p in model.parameters() if p.requires_grad)
 
 
-def test_weight_tying_and_zero_pad_row() -> None:
+def test_weight_tying_and_zero_pad_row_at_init() -> None:
     model = make_model()
     assert model.output.weight is model.token_embedding.weight
     assert model.token_embedding.weight[PAD].abs().sum() == 0

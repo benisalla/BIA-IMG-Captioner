@@ -8,10 +8,17 @@ question.
 |---|---|---|---|---|---|
 | 0 | `--overfit 8` (any dataset) | 8 | as the dataset | as the dataset | is the training loop wired correctly? |
 | 1 | `shapes` | 8 000 / 500 / 500, generated | 1, determined by the image | **none** | does the model really read the image? |
-| 2 | `flickr8k` | 6 000 / 1 000 / 1 000 photos | 5 human | 0.3 GB | does it describe real photos? (fast iterations) |
-| 3 | `flickr30k` (default) | 29 000 / 1 014 / 1 000 photos | 5 human | 4.3 GB | how good is it on a standard benchmark? |
-| 4 | `coco` | 113 287 / 5 000 / 5 000 photos | 5 human | 21 GB | the reference benchmark; compare with papers |
-| 5 | external (below) | 3M – 12M+ web images | 1 alt-text | 0.5 – 2 TB | robustness on real-world, open-domain images |
+| 2 | **`flowers`** | 5 569 / 328 / 655 photos | 1 short, consistent | 0.3 GB | **the "CIFAR-10 of captioning"**: real, beautiful photos, good results fast |
+| 3 | `birds` | 5 034 / 480 / 480 photos | ~10 human-written | 0.6 GB | the "CIFAR-100": fine-grained, human language, still simple |
+| 4 | `flickr8k` | 6 000 / 1 000 / 1 000 photos | 5 human | 0.3 GB | open-domain everyday photos, small |
+| 5 | `flickr30k` (default) | 29 000 / 1 014 / 1 000 photos | 5 human | 4.3 GB | a standard benchmark |
+| 6 | `coco` | 113 287 / 5 000 / 5 000 photos | ~5 human | 21 GB | the reference benchmark; compare with papers |
+| 7 | external (below) | 3M – 12M+ web images | 1 alt-text | 0.5 – 2 TB | real-world, open-domain robustness |
+
+The idea is the same as CIFAR-10 for image classification: if the model learns
+steps 1–3 well, the architecture and training code are right, and going to
+steps 4–7 is a matter of more data, a bigger model and more compute (more
+decoder layers, a larger pretrained encoder, more epochs, more GPUs).
 
 ## 1. `shapes`: the simplest proof the architecture works
 
@@ -50,20 +57,74 @@ cap-evaluate --checkpoint checkpoints/shapes/best.pt --split test --beam-size 1
 cap-evaluate --checkpoint checkpoints/shapes/best.pt --split test --beam-size 1 --shuffle-images
 ```
 
-## 2. `flickr8k`: small real photos
+## 2. `flowers`: the "CIFAR-10 of captioning"
+
+[pranked03/flowers-blip-captions](https://huggingface.co/datasets/pranked03/flowers-blip-captions):
+the 102-category Oxford Flowers photos (6 552 here, ~500 px, sharp and
+colorful), each with one short caption written by the BLIP captioning model:
+
+```
+"a purple passion flower with white flowers and green leaves"
+"a blue passion flower with a yellow flower in the middle of the flower"
+```
+
+Why it is the right "does it work on real photos?" dataset:
+
+- **Real, high-quality images** that look good in a README or a post.
+- **Simple, consistent language**: one object type, a small vocabulary
+  (colors, petal shapes, flower names), one caption style. The model reaches
+  good, clearly image-specific captions after a few epochs.
+- **Small**: 0.3 GB, ~5.6k training images. With a frozen pretrained encoder
+  it even trains on a laptop CPU (see [testing.md](testing.md)); on a free
+  Kaggle / Colab GPU it should take minutes (estimate).
+
+The dataset has a single split; `--dataset flowers` holds out a fixed random
+5% for validation and 10% for test (the rows are sorted by flower species, so
+the random cut keeps every species in every split).
+
+```bash
+cap-train --dataset flowers --encoder vit_b_16 --epochs 10 --output-dir checkpoints/flowers   # GPU
+cap-train --dataset flowers --encoder resnet50 --freeze-encoder --d-model 256 --heads 4 \
+          --layers 3 --epochs 4 --batch-size 32 --lr 5e-4 --output-dir checkpoints/flowers  # CPU
+cap-evaluate --checkpoint checkpoints/flowers/best.pt --split test --gallery flowers.png
+```
+
+`--gallery` saves a grid of test photos with the model's captions under them,
+ready to share.
+
+Measured on a laptop CPU with a frozen ResNet-50 and 4 epochs: test BLEU-4
+47.7, with the species named correctly in most captions (see the gallery in
+[testing.md](testing.md#3-flowers-real-photos-quick-results)).
+
+## 3. `birds`: the next step (CUB-200)
+
+[Multimodal-Fatima/CUB_train](https://huggingface.co/datasets/Multimodal-Fatima/CUB_train):
+5 994 photos of 200 bird species from CUB-200-2011, each with ~10
+**human-written** captions (Reed et al., 2016) about colors and body parts:
+
+```
+"this is a brown bird with a white face and a long downward pointing beak."
+"aquatic large bird with long hooked bill, white face, and brown body."
+```
+
+Harder than flowers (fine-grained details, ten different phrasings per image,
+human typos) but still a narrow domain with a small vocabulary. BLEU is
+computed against all ten captions. Held-out validation / test: 8% / 8%.
+
+## 4. `flickr8k`: small, open-domain photos
 
 [jxie/flickr8k](https://huggingface.co/datasets/jxie/flickr8k): 8 091
 everyday photos (people, dogs, sports), 5 captions each, the usual
 6k / 1k / 1k split. Small enough to train a pretrained encoder in minutes on
 one GPU, so it is the place to tune settings before a long run.
 
-## 3. `flickr30k`: the default benchmark
+## 5. `flickr30k`: a standard benchmark
 
 [AnyModal/flickr30k](https://huggingface.co/datasets/AnyModal/flickr30k):
 31 014 photos, 5 captions each, Karpathy split (29 000 / 1 014 / 1 000). The
 defaults of this repo are tuned for it.
 
-## 4. `coco`: the reference benchmark
+## 6. `coco`: the reference benchmark
 
 [jxie/coco_captions](https://huggingface.co/datasets/jxie/coco_captions):
 MS-COCO 2014 with the Karpathy split (113 287 / 5 000 / 5 000 images, ~5
@@ -75,7 +136,7 @@ gathers the rows of each image, so an epoch still visits every image once.
 Needs ~21 GB of disk (Kaggle's working disk is limited; use Colab with Google
 Drive, or your own GPU machine). One epoch is ~3.9× a Flickr30k epoch.
 
-## 5. Large, real-world data (beyond the presets)
+## 7. Large, real-world data (beyond the presets)
 
 For open-domain images (products, screenshots, art, outdoor scenes, text in
 images) the curated datasets above are too narrow. These need their own
@@ -110,7 +171,11 @@ cap-train --dataset-id user/my-data --image-column image --caption-columns capti
 cap-train --dataset-id user/my-data --caption-columns caption_0 caption_1 caption_2
 # one caption per row, several rows per image
 cap-train --dataset-id user/my-data --caption-columns caption --group-column image_id
+# several captions joined in one string
+cap-train --dataset-id user/my-data --caption-columns description --caption-separator $'\n'
+# only one split on the Hub: hold out 5% for validation and 10% for test
+cap-train --dataset-id user/my-data --caption-columns text --holdout 0.05 0.10
 ```
 
-The dataset needs `train` and `validation` splits (or pass `--train-split` /
-`--val-split`), and a `test` split for `cap-evaluate`.
+Without `--holdout`, the dataset needs `train` and `validation` splits (or
+pass `--train-split` / `--val-split`), and a `test` split for `cap-evaluate`.
