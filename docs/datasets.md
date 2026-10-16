@@ -43,8 +43,8 @@ Why it is the right first experiment:
   (color, size), counting (one or two objects) and spatial relations
   (left / right).
 - **It is cheap**: a 7.6M-parameter model with the BIA-ViT trained from
-  scratch learns it on a laptop CPU: after 2 epochs, 43% exact captions on
-  unseen test images vs 0.6% with shuffled images (see
+  scratch learns it on a laptop CPU: after 8 epochs, 88% exact captions
+  (BLEU-4 95.5) on unseen test images vs 1.2% with shuffled images (see
   [testing.md](testing.md#2-synthetic-shapes-does-the-architecture-read-images)).
   Any encoder works, pretrained or not.
 

@@ -84,48 +84,45 @@ cap-evaluate --checkpoint checkpoints/shapes/best.pt --split test --beam-size 1 
 ```
 
 Real run on a laptop CPU: **BIA-ViT trained from scratch** (7.6M parameters
-in total, 0.6M in the encoder), stopped after 250 optimizer steps (2 of the 8
-planned epochs, ~35 minutes; the CPU was shared with other jobs):
+in total, 0.6M in the encoder), the full 8 epochs = 1 000 optimizer steps
+(~1 h 50 on a CPU shared with other jobs; it was paused at step 250 and
+continued with `--resume`):
 
-| step | train loss | train token acc |
-|-----:|-----------:|----------------:|
-| 25   | 9.97       | 0.31 |
-| 100  | 2.50       | 0.77 |
-| 175  | 1.66       | 0.87 |
+| step | train loss | val loss | val token acc | val BLEU-4 |
+|-----:|-----------:|---------:|--------------:|-----------:|
+| 250  | 1.60       | 0.274    | 0.913         | 0.668 |
+| 500  | 1.53       | 0.186    | 0.952         | 0.856 |
+| 750  | 1.48       | 0.128    | 0.976         | 0.940 |
+| 1000 | 1.45       | **0.108**| **0.986**     | **0.962** |
 
 (Training loss includes label smoothing 0.1, so it cannot reach 0.)
-Validation at step 250: loss 0.27, token accuracy 0.913, BLEU-4 0.67.
 
 Test split (500 images never seen in training), greedy decoding:
 
 | | BLEU-1 | BLEU-4 | exact caption |
 |---|---:|---:|---:|
-| real images | 84.1 | **67.3** | **43.2%** |
-| images shuffled (`--shuffle-images`, the control) | 46.1 | 25.0 | 0.6% |
+| real images | 98.2 | **95.5** | **88.0%** |
+| images shuffled (`--shuffle-images`, the control) | 49.1 | 26.3 | 1.2% |
+| *(same model after only 2 epochs, real images)* | *84.1* | *67.3* | *43.2%* |
 
-(This control was measured with an earlier `--shuffle-images` that swapped
-images between neighbours of a batch; the shapes images are independent random
-draws, so the neighbour is as good as any other image. The current version
-uses a fixed random permutation of the whole split, which also works for
-datasets sorted by class.)
+The control is what proves the architecture works: given the *wrong* image
+(a fixed random permutation of the test split) the same model drops from 88%
+exact captions to 1.2%, so its captions come from the pixels, not from a
+memorised language pattern. The remaining BLEU of the control is the language
+prior (every caption starts "a small/big ... on the left and ...").
 
-The control is what proves the architecture works: given the *wrong* image the
-same model drops from 43% exact captions to 0.6%, so its captions come from
-the pixels, not from a memorised language pattern. The remaining BLEU of the
-control is the language prior (every caption starts "a small/big ... on the
-left and ...").
+![Captions written by the model for unseen synthetic test images](images/shapes_gallery.jpg)
 
-After 2 epochs colors, sizes, counts and left / right are mostly right; most
-errors are the shape word (circle / square / triangle), the hardest attribute
-at 64 px with 8 px patches:
+Colors, sizes, counts and left / right are almost always right. Of the 60
+wrong captions, 58 differ by one shape word, mostly a small circle called a
+square (47 times): at 64 px with 8 px patches a small circle is a few
+blocky pixels. Train longer or use `--image-size 96` / `--patch-size 4` to
+remove most of those.
 
 ```
 target:     a small green square on the left and a small blue circle on the right
-prediction: a small green triangle on the left and a small blue circle on the right
+prediction: a small green square on the left and a small blue square on the right
 ```
-
-The full 8-epoch schedule (or a GPU) should push exact match much higher; that
-run was not completed here.
 
 ## 3. Flowers: real photos, quick results
 

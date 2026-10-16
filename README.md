@@ -108,9 +108,9 @@ Everything below was run on a laptop CPU (no GPU), see [docs/testing.md](docs/te
   batch, same seed = same run, gradient accumulation = one big batch, and
   `cap-train` → `cap-generate` → `cap-evaluate` end to end.
 - **The architecture reads images**: BIA-ViT trained from scratch on the
-  synthetic shapes for only 2 epochs captions 500 *unseen* test images with
-  BLEU-4 67.3 and 43.2% exact captions; given shuffled images the same model
-  falls to 0.6% exact, so the captions come from the pixels.
+  synthetic shapes (8 epochs, ~2 h on a CPU) captions 500 *unseen* test images with
+  **BLEU-4 95.5 and 88% exact captions**; given shuffled images the same model
+  falls to 1.2% exact, so the captions come from the pixels.
 - **Real photos, short training**: on `flowers`, a frozen pretrained ResNet-50
   with the Transformer decoder reaches **BLEU-4 47.7** on 655 unseen test
   photos after 4 epochs on a CPU, and names the species in its captions
