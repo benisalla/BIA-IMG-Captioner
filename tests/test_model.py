@@ -8,8 +8,9 @@ from bia_captioner.model import IGNORE_INDEX, ImageCaptioner, _sample
 
 PAD, BOS, EOS = 0, 1, 2
 IMAGE_SIZE = 64
-# Image tokens at 64px: bia-vit (patch 16) 4x4 = 16, resnet50 2x2 = 4, vit-b16 4x4 + class = 17.
-TOKENS = {"bia-vit": 16, "resnet50": 4, "vit-b16": 17}
+# Image tokens at 64px: bia-vit (patch 16) 4x4 = 16, ResNet 2x2 = 4, ViT-B/16 4x4 + class = 17.
+TOKENS = {"bia-vit": 16, "resnet18": 4, "resnet50": 4, "vit_b_16": 17}
+ENCODERS = ["bia-vit", "resnet18", "vit_b_16"]  # one per family, random init (no download)
 
 
 def make_config(**overrides: object) -> ModelConfig:
@@ -19,6 +20,7 @@ def make_config(**overrides: object) -> ModelConfig:
         "bos_token_id": BOS,
         "eos_token_id": EOS,
         "encoder": "bia-vit",
+        "pretrained": False,  # tests never download weights
         "d_model": 32,
         "attention_heads": 2,
         "decoder_layers": 1,
@@ -40,7 +42,7 @@ def images(batch: int = 2) -> torch.Tensor:
     return torch.randn(batch, 3, IMAGE_SIZE, IMAGE_SIZE)
 
 
-@pytest.mark.parametrize("encoder", ["bia-vit", "resnet50", "vit-b16"])
+@pytest.mark.parametrize("encoder", ENCODERS)
 def test_shapes_for_every_encoder(encoder: str) -> None:
     model = make_model(encoder=encoder)
     pixels, ids = images(), torch.randint(3, 50, (2, 7))
@@ -51,7 +53,7 @@ def test_shapes_for_every_encoder(encoder: str) -> None:
 
 
 def test_wrong_image_size_is_rejected() -> None:
-    model = make_model(encoder="resnet50")
+    model = make_model(encoder="resnet18")
     with pytest.raises(ValueError, match="image tokens"):
         model.encode(torch.randn(1, 3, 128, 128))
 
@@ -230,7 +232,7 @@ def test_top_p_keeps_the_smallest_nucleus() -> None:
 
 
 def test_parameter_groups_cover_every_parameter_once() -> None:
-    model = make_model(encoder="resnet50")
+    model = make_model(encoder="resnet18")
     groups = model.parameter_groups(weight_decay=0.1, lr=1e-3, encoder_lr=1e-4)
     seen = [id(p) for group in groups for p in group["params"]]
     expected = {id(p) for p in model.parameters()}
@@ -252,7 +254,7 @@ def test_parameter_groups_cover_every_parameter_once() -> None:
 
 
 def test_vit_position_and_class_tokens_get_no_weight_decay() -> None:
-    model = make_model(encoder="vit-b16")
+    model = make_model(encoder="vit_b_16")
     groups = model.parameter_groups(weight_decay=0.1, lr=1e-3, encoder_lr=1e-4)
     group_of = {id(p): g for g in groups for p in g["params"]}
     assert group_of[id(model.encoder.vit.class_token)]["weight_decay"] == 0.0
@@ -260,7 +262,7 @@ def test_vit_position_and_class_tokens_get_no_weight_decay() -> None:
 
 
 def test_frozen_encoder_gets_no_gradient_and_stays_in_eval() -> None:
-    model = make_model(encoder="resnet50")
+    model = make_model(encoder="resnet18")
     model.freeze_encoder(True)
     model.train()
     assert not model.encoder.training  # BatchNorm keeps its running statistics
@@ -277,6 +279,115 @@ def test_frozen_encoder_gets_no_gradient_and_stays_in_eval() -> None:
 
     model.freeze_encoder(False)
     assert model.encoder.training and all(p.requires_grad for p in model.encoder.parameters())
+
+
+# --- standard neural-network sanity checks ---------------------------------------
+
+
+@pytest.mark.parametrize("encoder", ENCODERS)
+def test_every_trainable_parameter_receives_a_gradient(encoder: str) -> None:
+    # A parameter without gradient is dead weight (and breaks DDP): e.g. a layer
+    # that is built but never used, or a branch cut off by a detach().
+    model = make_model(encoder=encoder)
+    model.train()
+    ids = torch.randint(3, 50, (2, 6))
+    _, loss = model(images(), ids, ids.clone())
+    loss.backward()
+    dead = [
+        name
+        for name, p in model.named_parameters()
+        if p.requires_grad and (p.grad is None or p.grad.abs().sum() == 0)
+    ]
+    assert dead == []
+
+
+@pytest.mark.parametrize("encoder", ["bia-vit", "resnet18"])
+def test_samples_in_a_batch_do_not_influence_each_other(encoder: str) -> None:
+    # Catches reshapes that mix the batch and time axes, and BatchNorm in train mode.
+    model = make_model(encoder=encoder)
+    pixels, ids = images(4), torch.randint(3, 50, (4, 7))
+    batched, _ = model(pixels, ids)
+    alone, _ = model(pixels[2:3], ids[2:3])
+    assert torch.allclose(batched[2:3], alone, atol=1e-5)
+
+
+def test_eval_mode_is_deterministic_and_train_mode_uses_dropout() -> None:
+    model = make_model(dropout=0.3)
+    pixels, ids = images(), torch.randint(3, 50, (2, 7))
+    model.eval()
+    assert torch.equal(model(pixels, ids)[0], model(pixels, ids)[0])
+    model.train()
+    assert not torch.equal(model(pixels, ids)[0], model(pixels, ids)[0])
+
+
+def test_bf16_autocast_gives_finite_loss_close_to_fp32() -> None:
+    model = make_model()
+    ids = torch.randint(3, 50, (2, 7))
+    pixels = images()
+    _, fp32 = model(pixels, ids, ids.clone())
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        _, bf16 = model(pixels, ids, ids.clone())
+    assert torch.isfinite(bf16) and abs(bf16.item() - fp32.item()) < 0.05
+
+
+# --- pretrained vs from scratch ------------------------------------------------
+
+
+def test_pretrained_flag_controls_the_weights_that_are_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torchvision
+
+    requested = []
+    real_get_model = torchvision.models.get_model
+
+    def fake_get_model(name: str, weights=None):
+        requested.append(weights)
+        return real_get_model(name, weights=None)  # never download in tests
+
+    monkeypatch.setattr(torchvision.models, "get_model", fake_get_model)
+    ImageCaptioner(make_config(encoder="resnet18", pretrained=True), IMAGE_SIZE)
+    ImageCaptioner(make_config(encoder="resnet18", pretrained=False), IMAGE_SIZE)
+    # Loading a checkpoint overrides the config: its weights replace the pretrained ones.
+    ImageCaptioner(make_config(encoder="resnet18", pretrained=True), IMAGE_SIZE, False)
+    assert requested == ["DEFAULT", None, None]
+
+
+def test_pretrained_vit_needs_its_native_image_size() -> None:
+    with pytest.raises(ValueError, match="expects --image-size 224"):
+        ImageCaptioner(make_config(encoder="vit_b_16", pretrained=True), image_size=64)
+
+
+def tiny_hf_vit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make "hf:tiny/vit" resolve to a tiny random ViT config, offline."""
+    import transformers
+
+    config = transformers.ViTConfig(
+        hidden_size=24, num_hidden_layers=1, num_attention_heads=2, intermediate_size=48,
+        image_size=32, patch_size=8,
+    )  # fmt: skip
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *a, **k: config)
+
+
+def test_hugging_face_encoder_from_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
+    tiny_hf_vit(monkeypatch)
+    model = make_model(encoder="hf:tiny/vit")
+    # 64px with 8px patches = 8x8 patches + class token (position encodings interpolated).
+    assert model.num_image_tokens == 65
+    assert model.encode(images()).shape == (2, 65, 32)
+    # ViTModel's pooler never reaches the tokens: found and frozen, also after unfreezing.
+    unused = model.encoder.unused_parameters
+    assert unused and all("pooler" in name for name in unused)
+    model.freeze_encoder(True)
+    model.freeze_encoder(False)
+    frozen = {n for n, p in model.encoder.named_parameters() if not p.requires_grad}
+    assert frozen == unused
+
+    model.train()
+    ids = torch.randint(3, 50, (2, 6))
+    _, loss = model(images(), ids, ids.clone())
+    loss.backward()
+    assert all(p.grad is not None for p in model.parameters() if p.requires_grad)
 
 
 def test_weight_tying_and_zero_pad_row() -> None:

@@ -52,7 +52,7 @@ def caption_image(
     model: ImageCaptioner,
     tokenizer: PreTrainedTokenizerBase,
     image: Image.Image,
-    image_size: int,
+    data_config: DataConfig,
     beam_size: int = 3,
     length_penalty: float = 0.6,
     temperature: float = 0.0,
@@ -66,7 +66,10 @@ def caption_image(
     (optionally restricted with top_k / top_p).
     """
     device = next(model.parameters()).device
-    pixel_values = build_image_transform(image_size, train=False)(image.convert("RGB"))
+    transform = build_image_transform(
+        data_config.image_size, False, data_config.image_mean, data_config.image_std
+    )
+    pixel_values = transform(image.convert("RGB"))
     pixel_values = pixel_values[None].to(device)
     if beam_size > 1:
         tokens, _ = model.beam_search(
@@ -107,7 +110,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, str]:
     captions = {}
     for image_path in args.image:
         caption = caption_image(
-            model, tokenizer, Image.open(image_path), data_config.image_size,
+            model, tokenizer, Image.open(image_path), data_config,
             beam_size=args.beam_size, length_penalty=args.length_penalty,
             temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
         )  # fmt: skip

@@ -70,4 +70,18 @@ def corpus_bleu(
     return scores
 
 
-__all__ = ["corpus_bleu", "tokenize"]
+def exact_match(hypotheses: Sequence[str], references: Sequence[Sequence[str]]) -> float:
+    """Share of hypotheses equal to one of their references (same words, case and
+    punctuation ignored). Meaningful when captions are short and unambiguous
+    (the synthetic shapes data); for human captions BLEU is the usual metric."""
+    if len(hypotheses) != len(references):
+        raise ValueError("need exactly one list of references per hypothesis")
+    if not hypotheses:
+        return 0.0
+    hits = sum(
+        tokenize(h) in [tokenize(r) for r in refs] for h, refs in zip(hypotheses, references)
+    )
+    return hits / len(hypotheses)
+
+
+__all__ = ["corpus_bleu", "exact_match", "tokenize"]

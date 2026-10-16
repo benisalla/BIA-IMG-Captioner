@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from bia_captioner.metrics import corpus_bleu, tokenize
+from bia_captioner.metrics import corpus_bleu, exact_match, tokenize
 
 
 def test_tokenize_lowercases_and_drops_punctuation() -> None:
@@ -37,3 +37,10 @@ def test_known_bleu4_value() -> None:
 def test_lengths_must_match() -> None:
     with pytest.raises(ValueError, match="one list"):
         corpus_bleu(["a"], [])
+
+
+def test_exact_match_ignores_case_and_punctuation() -> None:
+    hyps = ["A big red circle.", "a small blue square", "a big red square"]
+    refs = [["a big red circle"], ["other", "A small blue square!"], ["a big red circle"]]
+    assert exact_match(hyps, refs) == pytest.approx(2 / 3)
+    assert exact_match([], []) == 0.0

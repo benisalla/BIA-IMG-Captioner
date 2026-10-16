@@ -40,8 +40,8 @@ def code(text: str) -> None:
 md("""
 # BIA Image Captioner: training notebook (Kaggle & Colab)
 
-Train the image-captioning model on **Flickr30k** with a **free Kaggle or Colab
-GPU**. The notebook is **self-contained**: section 2 writes the
+Train the image-captioning model with a **free Kaggle or Colab GPU**, on
+synthetic shapes, Flickr8k, Flickr30k or COCO. The notebook is **self-contained**: section 2 writes the
 `bia_captioner` package (identical to the repo's `src/`), and training goes
 through the same `train()` function as the `cap-train` command.
 
@@ -52,7 +52,8 @@ through the same `train()` function as the `cap-train` command.
 | Session limit | 12 h per session, 30 h GPU / week | ~12 h, can disconnect when idle |
 | Checkpoints kept in | `/kaggle/working` (saved with "Save Version") | Google Drive if `USE_GOOGLE_DRIVE = True` |
 
-The first run downloads Flickr30k (~4.3 GB) and the pretrained encoder weights.
+The first run downloads the dataset (none for shapes, ~4.3 GB for Flickr30k) and the
+pretrained encoder weights.
 
 **Sections:** 1. Install · 2. The package · 3. Settings · 4. Data ·
 5. Model · 6. Training with a live dashboard · 7. Results · 8. Download
@@ -105,17 +106,30 @@ print("bia_captioner ready")
 md("""
 ## 3. Settings
 
-Same defaults as the repo. Pick the image encoder:
+**Dataset** (`DATASET`, see `docs/datasets.md`):
 
-| `ENCODER` | What it is | Notes |
+| `DATASET` | Images | What for |
 |---|---|---|
-| `"vit-b16"` | ViT-B/16 pretrained on ImageNet | best captions (default) |
-| `"resnet50"` | ResNet-50 pretrained on ImageNet | lighter and faster |
-| `"bia-vit"` | the BIA Vision Transformer, **from scratch** | needs much longer training; Flickr30k is small for a ViT |
+| `"shapes"` | 8 000 generated shapes, no download | prove the architecture learns from pixels (minutes) |
+| `"flickr8k"` | 8 091 photos, ~0.3 GB | first real-photo run, fast |
+| `"flickr30k"` | 31 014 photos, ~4.3 GB | the default real benchmark |
+| `"coco"` | 123 287 photos, ~21 GB | the standard benchmark; Kaggle disk is tight, Colab Pro / own GPU |
 
-`FREEZE_ENCODER = True` trains only the decoder: about 3× faster, slightly
-lower quality. Batch size and precision adapt to the GPU; the effective batch
-stays 64.
+**Encoder** (`ENCODER`) and **how it starts** (`PRETRAINED`):
+
+| `ENCODER` | Family | `PRETRAINED = True` loads |
+|---|---|---|
+| `"bia-vit"` | the project's own ViT | (always from scratch) |
+| `"vit_b_16"`, `"vit_b_32"`, `"vit_l_16"` | torchvision ViT | ImageNet-1k weights |
+| `"resnet18"` … `"resnet152"` | torchvision ResNet | ImageNet-1k weights |
+| `"hf:google/vit-base-patch16-224-in21k"` | Hugging Face ViT | ImageNet-21k (14M images) |
+| `"hf:facebook/dinov2-base"` | Hugging Face DINOv2 | self-supervised, 142M images |
+| `"hf:openai/clip-vit-base-patch16"` | CLIP image tower | 400M image-text pairs |
+
+`PRETRAINED = False` starts any of them from random weights. Pretrained
+encoders get a small learning rate (1e-5), encoders trained from scratch the
+decoder's (3e-4). `FREEZE_ENCODER = True` trains only the decoder: much faster,
+slightly lower quality. Batch size and precision adapt to the GPU.
 
 `SMOKE_TEST = True` runs a tiny version (few images, small model) to check the
 whole notebook in a few minutes. Keep it `False` for real training.
@@ -126,13 +140,18 @@ from pathlib import Path
 
 import torch
 
-from bia_captioner.config import DataConfig, TrainConfig
+from bia_captioner.config import TrainConfig, data_config_for
 
 SMOKE_TEST = False          # True = tiny quick check of the whole notebook
-ENCODER = "vit-b16"         # "vit-b16" | "resnet50" | "bia-vit"
+DATASET = "flickr30k"       # "shapes" | "flickr8k" | "flickr30k" | "coco"
+ENCODER = "vit_b_16"        # "bia-vit" | "vit_b_16" | "resnet50" | "hf:<model id>" ...
+PRETRAINED = True           # False = train the encoder from scratch
 FREEZE_ENCODER = False      # True = train only the decoder
 USE_GOOGLE_DRIVE = False    # Colab only: keep checkpoints on Drive (survive disconnects)
 RESUME = True               # continue from last.pt in OUTPUT_DIR if it exists
+
+RUN_NAME = f"{DATASET}-{ENCODER.replace('hf:', '').replace('/', '-')}"
+RUN_NAME += "-pretrained" if PRETRAINED and ENCODER != "bia-vit" else "-scratch"
 
 # --- where checkpoints go ------------------------------------------------------
 ON_KAGGLE = Path("/kaggle/working").exists()
@@ -141,13 +160,13 @@ if ON_COLAB and USE_GOOGLE_DRIVE:
     from google.colab import drive
 
     drive.mount("/content/drive")
-    OUTPUT_DIR = Path(f"/content/drive/MyDrive/bia-captioner/{ENCODER}")
+    OUTPUT_DIR = Path(f"/content/drive/MyDrive/bia-captioner/{RUN_NAME}")
 elif ON_KAGGLE:
-    OUTPUT_DIR = Path(f"/kaggle/working/checkpoints/{ENCODER}")
+    OUTPUT_DIR = Path(f"/kaggle/working/checkpoints/{RUN_NAME}")
 elif ON_COLAB:
-    OUTPUT_DIR = Path(f"/content/checkpoints/{ENCODER}")
+    OUTPUT_DIR = Path(f"/content/checkpoints/{RUN_NAME}")
 else:
-    OUTPUT_DIR = Path(f"checkpoints/notebook-{ENCODER}")
+    OUTPUT_DIR = Path(f"checkpoints/{RUN_NAME}")
 
 # --- device, precision, batch size -----------------------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -160,9 +179,9 @@ if device.type == "cuda":
     print(f"GPU: {props.name} ({gpu_gb:.0f} GB)")
 else:
     precision, batch_size = "fp32", 16
-    print("No GPU: enable one in the notebook settings (fine only for SMOKE_TEST).")
+    print("No GPU: enable one in the notebook settings (fine only for SMOKE_TEST / shapes).")
 
-data_config = DataConfig()
+data_config = data_config_for(DATASET)
 train_config = TrainConfig(
     output_dir=OUTPUT_DIR,
     batch_size=batch_size,
@@ -174,9 +193,17 @@ train_config = TrainConfig(
     eval_every=500,
     log_every=25,
 )
-model_size = {"encoder": ENCODER}
-if ENCODER == "bia-vit":
+model_size = {"encoder": ENCODER, "pretrained": PRETRAINED}
+if not PRETRAINED or ENCODER == "bia-vit":
     train_config = dataclasses.replace(train_config, epochs=40)  # from scratch: longer
+
+if DATASET == "shapes":
+    # Small images and a small model are enough for shapes (bia-vit: 8px patches).
+    data_config = dataclasses.replace(data_config, image_size=64 if not PRETRAINED else 224)
+    model_size.update(d_model=128, attention_heads=4, decoder_layers=2, encoder_layers=3,
+                      patch_size=8)
+    train_config = dataclasses.replace(train_config, epochs=8, lr=1e-3, warmup_steps=100,
+                                       eval_every=250, bleu_samples=200)
 
 if SMOKE_TEST:
     model_size.update(d_model=128, attention_heads=4, decoder_layers=2, encoder_layers=2,
@@ -203,16 +230,17 @@ print(f"\\nmodel: {model_size}")
 md("""
 ## 4. Data
 
-Flickr30k with the standard Karpathy splits: 29 000 train / 1 014 validation /
-1 000 test images, 5 captions each. Training sees every image once per epoch
-with a random one of its captions.
+One item per image. Training sees every image once per epoch with a random one
+of its captions; validation always uses the first caption, and BLEU compares
+with all of them. Images are normalised the way the chosen encoder expects.
 """)
 code("""
 import logging
 
 import matplotlib.pyplot as plt
 
-from bia_captioner.data import IMAGENET_MEAN, IMAGENET_STD, CaptionCollator, FlickrDataset
+from bia_captioner.data import CaptionCollator, build_dataset
+from bia_captioner.model import encoder_normalization
 from bia_captioner.tokenizer import build_tokenizer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S",
@@ -222,18 +250,22 @@ for name in ("httpx", "httpx2"):  # hide Hugging Face HTTP logs
 T.seed_everything(train_config.seed)
 
 tokenizer = build_tokenizer(data_config.tokenizer_id, data_config.cache_dir)
-train_dataset = FlickrDataset(data_config, tokenizer, data_config.train_split,
-                              limit=train_config.train_limit, train=True)
-val_dataset = FlickrDataset(data_config, tokenizer, data_config.val_split,
+model_config = T.build_model_config(tokenizer, data_config, **model_size)
+mean, std = encoder_normalization(model_config)
+data_config = dataclasses.replace(data_config, image_mean=mean, image_std=std)
+
+train_dataset = build_dataset(data_config, tokenizer, data_config.train_split,
+                              limit=train_config.train_limit, train=train_config.augment)
+val_dataset = build_dataset(data_config, tokenizer, data_config.val_split,
                             limit=train_config.val_limit)
 print(f"train: {len(train_dataset):,} images | validation: {len(val_dataset):,} images")
 
 
 def show_image(pixel_values, ax, title=""):
-    \"\"\"Undo the ImageNet normalisation and draw the image.\"\"\"
-    mean = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD).view(3, 1, 1)
-    ax.imshow((pixel_values.cpu() * std + mean).clamp(0, 1).permute(1, 2, 0))
+    \"\"\"Undo the normalisation and draw the image.\"\"\"
+    m = torch.tensor(data_config.image_mean).view(3, 1, 1)
+    s = torch.tensor(data_config.image_std).view(3, 1, 1)
+    ax.imshow((pixel_values.cpu() * s + m).clamp(0, 1).permute(1, 2, 0))
     ax.set_title(title, fontsize=8, wrap=True)
     ax.axis("off")
 
@@ -258,11 +290,11 @@ import math
 
 from bia_captioner.model import ImageCaptioner
 
-model_config = T.build_model_config(tokenizer, data_config, **model_size)
 model = ImageCaptioner(model_config, image_size=data_config.image_size).to(device)
 n_params = sum(p.numel() for p in model.parameters())
 n_encoder = sum(p.numel() for p in model.encoder.parameters())
-print(f"parameters: {n_params / 1e6:.1f}M (encoder {ENCODER} {n_encoder / 1e6:.1f}M)")
+start = "pretrained" if model_config.encoder_is_pretrained else "from scratch"
+print(f"parameters: {n_params / 1e6:.1f}M (encoder {ENCODER}, {start}, {n_encoder / 1e6:.1f}M)")
 print(f"image tokens per image: {model.num_image_tokens}")
 
 # Sanity check: an untrained decoder should be close to random guessing, ln(vocab).

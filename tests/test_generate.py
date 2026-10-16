@@ -110,8 +110,20 @@ def test_evaluate_cli_scores_a_split(tmp_path: Path) -> None:
          "--batch-size", "2", "--output", str(output)],
         dataset_loader=loader,
     )  # fmt: skip
-    assert set(scores) == {"bleu1", "bleu2", "bleu3", "bleu4"}
+    assert set(scores) == {"bleu1", "bleu2", "bleu3", "bleu4", "exact_match"}
     assert all(0.0 <= v <= 1.0 for v in scores.values())
     saved = json.loads(output.read_text())
     assert len(saved["predictions"]) == 3
     assert saved["predictions"][0]["references"] == ["a dog runs", "a dog"]
+
+
+def test_evaluate_with_shuffled_images_runs(tmp_path: Path) -> None:
+    path, _ = write_checkpoint(tmp_path / "run")
+    rows = [{"image": Image.new("RGB", (40, 30), c), "original_alt_text": ["a dog"]}
+            for c in ("white", "black")]  # fmt: skip
+    scores = evaluate.run(
+        ["--checkpoint", str(path), "--device", "cpu", "--num-workers", "0",
+         "--beam-size", "1", "--shuffle-images"],
+        dataset_loader=lambda *a, **k: FakeSplit(rows),
+    )  # fmt: skip
+    assert 0.0 <= scores["exact_match"] <= 1.0

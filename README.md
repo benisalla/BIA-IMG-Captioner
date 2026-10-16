@@ -8,14 +8,15 @@
 
 An image-captioning model in plain PyTorch: an image encoder turns the photo
 into a set of "image tokens", and a hand-written Transformer decoder writes the
-caption one word piece at a time while attending to them. Three encoders are
-available: a **pretrained ViT-B/16** (default), a **pretrained ResNet-50**, or
-the project's own **BIA Vision Transformer trained from scratch**. Trains on a
+caption one word piece at a time while attending to them. The encoder can be a
+**Vision Transformer** or a **ResNet**, **pretrained or trained from
+scratch**: the project's own BIA-ViT, any torchvision ViT / ResNet, or any
+Hugging Face vision model (ImageNet-21k ViT, DINOv2, CLIP, ...). Trains on a
 CPU, one GPU, several GPUs or several machines.
 
 ```mermaid
 flowchart LR
-    IMG["photo<br/>224 × 224"] --> ENC["image encoder<br/>ViT-B/16 · ResNet-50 · BIA-ViT"]
+    IMG["photo<br/>224 × 224"] --> ENC["image encoder<br/>ViT · ResNet · BIA-ViT<br/>pretrained or from scratch"]
     ENC --> TOK["image tokens<br/>(197 for ViT-B/16)"]
     TOK -- "cross-attention" --> DEC["Transformer decoder<br/>6 layers"]
     TXT["BOS + caption so far"] --> DEC
@@ -23,9 +24,9 @@ flowchart LR
     NEXT -. "append and repeat until EOS<br/>(greedy, sampling or beam search)" .-> TXT
 ```
 
-> **No trained weights are published yet.** Train a model first (step 4
+> **No trained weights are published yet.** Train a model first (steps 3–5
 > below, or the Kaggle/Colab notebook); a checkpoint is then saved in
-> `checkpoints/run/`.
+> `checkpoints/`.
 
 ## Quick start
 
@@ -35,21 +36,74 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'          # see docs/training.md for GPU / CPU-only torch
 
-# 2. check everything works (CPU, no network, ~1 min)
+# 2. unit tests and neural-network sanity checks (CPU, no network, ~1 min)
 pytest
 
-# 3. sanity check on real data: can the model memorise 8 images?
+# 3. prove the architecture learns from pixels: synthetic shapes, no download, laptop CPU
+cap-train --dataset shapes --encoder bia-vit --image-size 64 --patch-size 8 \
+          --d-model 128 --heads 4 --layers 2 --encoder-layers 3 \
+          --epochs 8 --lr 1e-3 --warmup-steps 100 --eval-every 250 --bleu-samples 200 \
+          --output-dir checkpoints/shapes
+
+# 4. sanity check on real photos: can the model memorise 8 of them?
 cap-train --overfit 8 --epochs 60 --batch-size 8 --lr 1e-3 --warmup-steps 5 \
           --eval-every 20 --log-every 5 --output-dir checkpoints/overfit
 
-# 4. real training (1 GPU; pick the encoder with --encoder vit-b16 | resnet50 | bia-vit)
-cap-train --output-dir checkpoints/run
+# 5. real training (1 GPU)
+cap-train --dataset flickr30k --encoder vit_b_16 --output-dir checkpoints/run
 
-# 5. use the trained model
+# 6. use the trained model
 cap-generate --checkpoint checkpoints/run/best.pt --image photo.jpg
 cap-evaluate --checkpoint checkpoints/run/best.pt --split test        # BLEU-1..4
 streamlit run app/streamlit_app.py -- --checkpoint checkpoints/run/best.pt   # pip install -e '.[app]'
 ```
+
+## Encoders: ViT or ResNet, pretrained or from scratch
+
+| `--encoder` | Family | Default start | `--from-scratch` |
+|---|---|---|---|
+| `bia-vit` | the project's own Vision Transformer | from scratch | (always) |
+| `vit_b_16` (default), `vit_b_32`, `vit_l_16`, `vit_l_32`, `vit_h_14` | torchvision ViT | ImageNet-1k weights | random init |
+| `resnet18`, `resnet34`, `resnet50`, `resnet101`, `resnet152` | torchvision ResNet | ImageNet-1k weights | random init |
+| `hf:<model id>`, e.g. `hf:google/vit-base-patch16-224-in21k`, `hf:facebook/dinov2-base`, `hf:openai/clip-vit-base-patch16`, `hf:microsoft/resnet-50` | any Hugging Face vision model | that checkpoint's weights | random init |
+
+A pretrained encoder is fine-tuned with a small learning rate (1e-5), an
+encoder trained from scratch with the decoder's (3e-4); `--freeze-encoder`
+trains only the decoder. Details in [docs/training.md](docs/training.md#2-choose-a-dataset-and-an-encoder).
+
+## Datasets: from a 2-minute proof to real-world photos
+
+| `--dataset` | Images | Download | Use it to |
+|---|---|---|---|
+| `shapes` | 8 000 generated shapes, caption determined by the image | none | prove the architecture reads the image (laptop CPU) |
+| `flickr8k` | 8 091 photos, 5 captions each | 0.3 GB | first real-photo runs, quick tuning |
+| `flickr30k` (default) | 31 014 photos, 5 captions each | 4.3 GB | the default benchmark |
+| `coco` | 123 287 photos, ~5 captions each | 21 GB | the reference benchmark (compare with papers) |
+
+For real-world scale (Conceptual Captions 3M / 12M, nocaps, TextCaps,
+VizWiz) and for using any other Hugging Face dataset, see
+[docs/datasets.md](docs/datasets.md).
+
+## Verified so far
+
+Everything below was run on a laptop CPU (no GPU), see [docs/testing.md](docs/testing.md):
+
+- **102 unit tests**, including the standard neural-network sanity checks:
+  initial loss = ln(vocab), every parameter gets a gradient, no information
+  leaks from future tokens or between samples of a batch, padding is ignored,
+  dropout is off in eval, bf16 is stable, the model overfits one batch, same
+  seed = same run, gradient accumulation = one big batch.
+- **The architecture reads images**: BIA-ViT trained from scratch on the
+  synthetic shapes for only 2 epochs captions 500 *unseen* test images with
+  BLEU-4 67.3 and 43.2% exact captions; given shuffled images the same model
+  falls to 0.6% exact, so the captions come from the pixels.
+- **Real photos, overfit check**: pretrained ViT-B/16 memorised 8 Flickr30k
+  images (val loss 0.012, BLEU-4 1.00); `cap-generate` reproduced their
+  captions word for word after reloading.
+- **Notebook, multi-GPU (DDP) launch, resume, CLIs and web app** run end to end.
+
+Not done yet: a full training run on a GPU, so there is no Flickr30k / COCO
+test score yet. The notebook is the quickest way to get one.
 
 ## What changed from the first version
 
@@ -58,7 +112,7 @@ concrete reasons, all fixed here:
 
 | Problem in v1 | Effect | Now |
 |---|---|---|
-| ViT encoder trained from scratch on 29k images | encoder learns little, generic captions | pretrained ViT-B/16 or ResNet-50 by default; the BIA-ViT is still available (`--encoder bia-vit`) |
+| ViT encoder trained from scratch on 29k images | encoder learns little, generic captions | pretrained ViT / ResNet by default; from-scratch still available for every encoder |
 | `zero_grad()` before every batch, `step()` every 25 | 24 of 25 batches' gradients thrown away | correct gradient accumulation (tested) |
 | `max_iters = 20` with steps every 25 batches; 8 000-step warmup | the optimizer barely (or never) stepped | full epochs, 500-step warmup + cosine |
 | attention module built itself (`self.ln = ResMHAtten(...)`) | the model could not be created | clean pre-norm blocks with fused attention |
@@ -71,10 +125,11 @@ The full audit (model, generation, training, data, app) is in
 
 | Guide | What is inside |
 |-------|----------------|
-| [notebooks/train_colab_kaggle.ipynb](notebooks/train_colab_kaggle.ipynb) | **Train on a free Kaggle or Colab GPU**: self-contained, same code, live loss / accuracy / BLEU dashboard |
-| [docs/training.md](docs/training.md) | Choosing an encoder; CPU, one GPU, several GPUs or machines; resume; every flag; time estimates |
+| [notebooks/train_colab_kaggle.ipynb](notebooks/train_colab_kaggle.ipynb) | **Train on a free Kaggle or Colab GPU**: self-contained, pick dataset / encoder / pretrained, live loss / accuracy / BLEU dashboard |
+| [docs/datasets.md](docs/datasets.md) | Which dataset for which question, from synthetic shapes to COCO and web-scale data |
+| [docs/training.md](docs/training.md) | Encoders, CPU / GPU / multi-GPU / multi-node, resume, every flag, time estimates |
 | [docs/inference.md](docs/inference.md) | Caption images (CLI, Python, web demo), beam search vs sampling, BLEU evaluation |
-| [docs/testing.md](docs/testing.md) | Unit tests, the overfit sanity check on real data, what each test proves |
+| [docs/testing.md](docs/testing.md) | Unit tests and sanity checks, real-data runs and their results |
 | [docs/architecture.md](docs/architecture.md) | How the encoders, decoder, loss and beam search work, with tensor shapes |
 | [legacy/README.md](legacy/README.md) | What was wrong with the first version and why it trained badly |
 
@@ -82,11 +137,12 @@ The full audit (model, generation, training, data, app) is in
 
 ```
 src/bia_captioner/     the package (read in this order)
-  config.py            every hyperparameter: DataConfig, ModelConfig, TrainConfig
+  config.py            every hyperparameter (DataConfig, ModelConfig, TrainConfig),
+                       encoder names and dataset presets
   tokenizer.py         GPT-2 BPE + a dedicated <|pad|>; sequences are <bos> caption <eos>
-  data.py              Flickr30k dataset (random caption per image), transforms, collator
-  model.py             encoders (ViT-B/16, ResNet-50, BIA-ViT) + Transformer decoder,
-                       loss, greedy / sampling generate(), beam_search()
+  data.py              Hugging Face caption datasets, synthetic shapes, transforms, collator
+  model.py             encoders (BIA-ViT, torchvision ViT / ResNet, Hugging Face) +
+                       Transformer decoder, loss, greedy / sampling generate(), beam_search()
   metrics.py           corpus BLEU-1..4 (no extra dependency)
   train.py             training loop: AMP, grad accumulation, DDP, checkpoints, CLI
   generate.py          inference CLI: checkpoint + images -> captions
@@ -99,19 +155,10 @@ legacy/                the original code, kept for reference, with an audit of i
 pyproject.toml         dependencies and the cap-train / cap-generate / cap-evaluate commands
 ```
 
-## Dataset
+## Next steps
 
-[Flickr30k](https://huggingface.co/datasets/AnyModal/flickr30k) with the
-standard Karpathy splits: 29 000 train / 1 014 validation / 1 000 test photos,
-5 human captions each (~4.3 GB, downloaded automatically on first run). We
-validate on `validation` and keep `test` for the final BLEU.
-
-## Status and next steps
-
-- [x] Clean data pipeline, three encoders, decoder, training loop, inference
-      and evaluation CLIs, web demo, tests
-- [x] Single-GPU, multi-GPU and multi-node training (DDP)
-- [x] End-to-end runs on real Flickr30k images (overfit sanity checks, see docs/testing.md)
-- [ ] Full training run on GPU and test-split BLEU for each encoder
+- [ ] Full GPU training runs and test-split BLEU on Flickr30k and COCO, for a
+      pretrained and a from-scratch encoder
 - [ ] CIDEr / METEOR (the usual captioning metrics besides BLEU)
 - [ ] KV cache for faster generation
+- [ ] A loader for web-scale WebDataset shards (CC3M / CC12M)

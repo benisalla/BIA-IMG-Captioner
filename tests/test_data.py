@@ -7,12 +7,15 @@ import pytest
 import torch
 from PIL import Image
 
-from bia_captioner.config import DataConfig
+from bia_captioner.config import DataConfig, data_config_for
 from bia_captioner.data import (
     CaptionCollator,
-    FlickrDataset,
+    CaptionDataset,
+    SyntheticShapes,
     as_caption_list,
+    build_dataset,
     build_image_transform,
+    render_shapes,
     to_rgb_image,
 )
 
@@ -66,9 +69,9 @@ def make_loader(captions: list[list[str] | str]) -> Any:
 
 def make_dataset(
     captions: list[list[str] | str], max_tokens: int = 64, **kwargs: Any
-) -> FlickrDataset:
+) -> CaptionDataset:
     config = DataConfig(image_size=32, max_tokens=max_tokens)
-    return FlickrDataset(
+    return CaptionDataset(
         config, FakeTokenizer(), split="train", dataset_loader=make_loader(captions), **kwargs
     )
 
@@ -114,8 +117,64 @@ def test_references_are_all_captions_cleaned() -> None:
 
 
 def test_image_without_caption_is_rejected() -> None:
+    assert as_caption_list(["", "  "]) == []
     with pytest.raises(ValueError, match="caption"):
-        as_caption_list(["", "  "])
+        make_dataset([["", "  "]])
+
+
+def test_captions_spread_over_several_columns() -> None:
+    rows = [{"image": Image.new("RGB", (8, 8)), "c0": "a dog", "c1": "a puppy"}]
+    config = DataConfig(image_size=16, caption_columns=("c0", "c1"))
+    dataset = CaptionDataset(
+        config, FakeTokenizer(), "train", dataset_loader=lambda *a, **k: FakeSplit(rows)
+    )
+    assert dataset.references(0) == ["a dog", "a puppy"]
+
+
+def test_one_caption_per_row_is_grouped_by_image_id() -> None:
+    # COCO style: 5 rows per image. Each image must appear once, with all its captions.
+    colors = {1: "red", 2: "blue"}
+    rows = [
+        {"image": Image.new("RGB", (8, 8), colors[i]), "caption": f"cap {i}.{k}", "cocoid": i}
+        for i in (1, 2)
+        for k in range(3)
+    ]
+    rows.append({"image": Image.new("RGB", (8, 8), "red"), "caption": "late", "cocoid": 1})
+    config = DataConfig(image_size=16, caption_columns=("caption",), group_column="cocoid")
+    loader = lambda *a, **k: FakeSplit(rows)
+    dataset = CaptionDataset(config, FakeTokenizer(), "train", dataset_loader=loader)
+    assert len(dataset) == 2
+    assert dataset.references(0) == ["cap 1.0", "cap 1.1", "cap 1.2", "late"]
+    assert dataset.image(1).getpixel((0, 0)) == (0, 0, 255)  # image of the right group
+    assert len(CaptionDataset(config, FakeTokenizer(), "train", 1, dataset_loader=loader)) == 1
+
+
+def test_synthetic_captions_describe_the_picture() -> None:
+    import random
+
+    for seed in range(50):
+        image, caption = render_shapes(random.Random(seed), canvas=64)
+        words = caption.split()
+        colors = [w for w in words if w in ("red", "green", "blue", "yellow")]
+        assert words[0] == "a" and words[-1] in ("circle", "square", "triangle", "right")
+        assert ("on the left" in caption) == (len(colors) == 2)
+        # Every named color is actually drawn.
+        pixels = set(map(tuple, np.asarray(image).reshape(-1, 3).tolist()))
+        palette = {"red": (220, 40, 40), "green": (40, 160, 60), "blue": (40, 80, 220),
+                   "yellow": (230, 190, 20)}  # fmt: skip
+        assert all(palette[c] in pixels for c in colors)
+
+
+def test_synthetic_dataset_is_deterministic_and_splits_differ() -> None:
+    config = data_config_for("shapes", image_size=32)
+    train = build_dataset(config, FakeTokenizer(), "train", limit=20)
+    again = SyntheticShapes(config, FakeTokenizer(), "train", limit=20)
+    val = SyntheticShapes(config, FakeTokenizer(), "validation", limit=20)
+    assert isinstance(train, SyntheticShapes) and len(train) == 20
+    assert torch.equal(train[3]["pixel_values"], again[3]["pixel_values"])
+    assert train.captions == again.captions
+    assert train.captions != val.captions
+    assert train[0]["pixel_values"].shape == (3, 32, 32)
 
 
 def test_limit_keeps_first_samples() -> None:
@@ -131,7 +190,7 @@ def test_limit_must_be_positive() -> None:
 def test_loader_receives_config_values() -> None:
     loader = make_loader([["a"]])
     config = DataConfig(dataset_id="some/dataset", cache_dir=None)
-    FlickrDataset(config, FakeTokenizer(), split="test", dataset_loader=loader)
+    CaptionDataset(config, FakeTokenizer(), split="test", dataset_loader=loader)
     assert loader.calls == [{"dataset_id": "some/dataset", "split": "test", "cache_dir": None}]
 
 
@@ -143,10 +202,12 @@ def test_numpy_images_are_converted_to_rgb() -> None:
     assert to_rgb_image(np.zeros((8, 8, 3), dtype=np.uint8)).mode == "RGB"
 
 
-def test_transforms_keep_output_shape() -> None:
-    image = Image.new("RGB", (50, 20), "gray")
+def test_transforms_keep_output_shape_and_use_the_given_normalisation() -> None:
+    image = Image.new("RGB", (50, 20), (255, 255, 255))
     for train in (False, True):
         assert build_image_transform(16, train=train)(image).shape == (3, 16, 16)
+    white = build_image_transform(4, False, mean=(0.5,) * 3, std=(0.5,) * 3)(image)
+    assert torch.allclose(white, torch.ones_like(white))  # (1 - 0.5) / 0.5
 
 
 def test_collator_pads_and_masks_labels() -> None:

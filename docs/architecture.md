@@ -6,9 +6,12 @@ caption tokens in the batch, N = number of image tokens, V = vocabulary size
 
 ## 1. Data (`data.py`, `tokenizer.py`)
 
-[Flickr30k](https://huggingface.co/datasets/AnyModal/flickr30k), Karpathy
-splits: 29 000 train / 1 014 validation / 1 000 test photos, each with 5
-human captions.
+Default: [Flickr30k](https://huggingface.co/datasets/AnyModal/flickr30k),
+Karpathy splits: 29 000 train / 1 014 validation / 1 000 test photos, each
+with 5 human captions. Other presets (`shapes`, `flickr8k`, `coco`) and any
+Hugging Face dataset go through the same code: see [datasets.md](datasets.md).
+Captions can come as one list column, several string columns, or one caption
+per row grouped by an image id (COCO).
 
 **One item per image.** During training each image comes with a *random* one
 of its captions, so an epoch encodes every image once while all captions
@@ -45,10 +48,10 @@ pixel_values [B, 3, 224, 224]   input_ids [B, T]   labels [B, T]   index [B]
 
 ```mermaid
 flowchart TB
-    subgraph ENC["Image encoder (one of three)"]
+    subgraph ENC["Image encoder (pretrained or from scratch)"]
         direction TB
         IMG["pixel_values<br/>B × 3 × 224 × 224"]
-        CHOICE["vit-b16: pretrained ViT-B/16 → B × 197 × 768<br/>resnet50: pretrained ResNet-50 → B × 49 × 2048<br/>bia-vit: BIA-ViT from scratch → B × 196 × d"]
+        CHOICE["ViT (torchvision / HF): B × 197 × 768<br/>ResNet: B × 49 × 2048 (7 × 7 grid)<br/>BIA-ViT: B × 196 × d"]
         PROJ["Linear → d + learned position per image token<br/>B × N × d"]
         MEM["LayerNorm = memory"]
         IMG --> CHOICE --> PROJ --> MEM
@@ -74,20 +77,49 @@ flowchart TB
     MEM -. "keys and values" .-> CA
 ```
 
-### The three encoders
+### The encoders
 
-| `--encoder` | Weights | Image tokens (224 px) | Encoder params | When to use |
-|---|---|---|---|---|
-| `vit-b16` (default) | ImageNet-1k | 197 × 768 (196 patches + class token) | 85.8M | best captions |
-| `resnet50` | ImageNet-1k | 49 × 2048 (7 × 7 grid) | 23.5M | faster / less memory |
-| `bia-vit` | from scratch | 196 × d (14 × 14 patches) | 19.4M (6 layers, d = 512) | learning / research; needs many more epochs |
+Every encoder returns a sequence of image tokens `[B, N, C]`; a linear layer
+maps C to d. All of them except BIA-ViT can start from pretrained weights or
+from scratch (`--from-scratch`).
 
-**BIA-ViT** is the project's own Vision Transformer: 16 × 16 patches embedded
-by a strided convolution, a learned position per patch, pre-norm Transformer
-blocks (the same `MultiHeadAttention` / `FeedForward` modules as the decoder)
-and a final LayerNorm. It is a correct ViT, but on 29k images a ViT trained
-from scratch stays far behind a pretrained encoder: Transformers have no
-built-in notion of locality and need very large datasets to learn it.
+| `--encoder` | Pretrained on | Image tokens (224 px) | Encoder params |
+|---|---|---|---|
+| `bia-vit` | (always from scratch) | 196 × d (14 × 14 patches) | 19.4M (6 layers, d = 512) |
+| `vit_b_16` (default) | ImageNet-1k | 197 × 768 (196 patches + class token) | 85.8M |
+| `vit_b_32` / `vit_l_16` / `vit_l_32` / `vit_h_14` | ImageNet-1k (`vit_h_14`: SWAG, 518 px) | 50 × 768 / 197 × 1024 / 50 × 1024 / 1370 × 1280 | 87.5M / 303M / 306M / 632M |
+| `resnet18` / `resnet34` | ImageNet-1k | 49 × 512 (7 × 7 grid) | 11.2M / 21.3M |
+| `resnet50` / `resnet101` / `resnet152` | ImageNet-1k | 49 × 2048 | 23.5M / 42.5M / 58.1M |
+| `hf:<model id>` | that checkpoint (ImageNet-21k, DINOv2, CLIP, SigLIP, ...) | the model's last hidden states | depends |
+
+How each one is turned into tokens (`model.py`):
+
+- **torchvision ViT**: patch embedding + class token + the Transformer
+  encoder; the classifier head is dropped and *all* tokens are kept.
+- **torchvision ResNet**: everything up to the last convolutional stage; the
+  pooling and classifier are dropped and each cell of the 7 × 7 grid is a token.
+- **Hugging Face**: `AutoModel` (for CLIP / SigLIP only the image tower);
+  its `last_hidden_state` are the tokens (a 4-D convolutional output is
+  flattened like a ResNet grid). ViT-style models interpolate their position
+  encodings at other image sizes. Parameters that never reach the tokens
+  (poolers, projection heads) are found with one probe pass and frozen, so
+  multi-GPU training does not wait for gradients that never come.
+- **BIA-ViT** is the project's own Vision Transformer: 16 × 16 patches embedded
+  by a strided convolution, a learned position per patch, pre-norm Transformer
+  blocks (the same `MultiHeadAttention` / `FeedForward` modules as the decoder)
+  and a final LayerNorm.
+
+Inputs are normalised the way the encoder was trained: ImageNet mean / std for
+torchvision models and BIA-ViT, the Hugging Face image processor's values for
+`hf:` models (CLIP, for example, uses different statistics). The values are
+stored in the checkpoint, so inference always matches training.
+
+**Pretrained vs from scratch.** On 29k photos a pretrained encoder captions far
+better: a ViT trained from scratch has no built-in notion of locality and
+needs very large datasets to learn it; a ResNet from scratch does somewhat
+better thanks to its convolutions but is still far from ImageNet features. On
+the synthetic `shapes` data an encoder trained from scratch does learn the
+task (see testing.md), which makes it a good test of the architecture itself.
 
 ### Design choices, and why
 
@@ -106,7 +138,7 @@ built-in notion of locality and need very large datasets to learn it.
   25.7M parameters and usually gives a better language model.
 - **GPT-2 style init**: new weights ~ N(0, 0.02), residual output projections
   scaled by 1/√(2 · layers); a pretrained encoder keeps its weights.
-- Default size with `vit-b16`: 137M parameters (encoder 86M, decoder 52M,
+- Default size with `vit_b_16`: 137M parameters (encoder 86M, decoder 52M,
   of which 26M is the shared embedding).
 
 ## 3. Loss

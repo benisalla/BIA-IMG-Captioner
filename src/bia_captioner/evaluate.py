@@ -18,9 +18,9 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from bia_captioner.data import CaptionCollator, FlickrDataset
+from bia_captioner.data import CaptionCollator, build_dataset
 from bia_captioner.generate import load_model, load_tokenizer
-from bia_captioner.metrics import corpus_bleu
+from bia_captioner.metrics import corpus_bleu, exact_match
 from bia_captioner.train import autocast, resolve_device, resolve_precision
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 @torch.inference_mode()
 def predict(
     model: torch.nn.Module,
-    dataset: FlickrDataset,
+    dataset: torch.utils.data.Dataset,
     tokenizer,
     device: torch.device,
     beam_size: int = 3,
@@ -37,8 +37,14 @@ def predict(
     batch_size: int = 32,
     num_workers: int = 2,
     amp_dtype: torch.dtype | None = None,
+    shuffle_images: bool = False,
 ) -> list[str]:
-    """Caption every image of the dataset, in order."""
+    """Caption every image of the dataset, in order.
+
+    shuffle_images=True is a sanity check: each caption is generated from the
+    *next* image of the batch, so scores must collapse if the model really
+    reads the image (and stay the same if it only learned the language).
+    """
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
         collate_fn=CaptionCollator(pad_token_id=tokenizer.pad_token_id),
@@ -46,6 +52,8 @@ def predict(
     captions: list[str] = []
     for batch_index, batch in enumerate(loader):
         pixel_values = batch["pixel_values"].to(device)
+        if shuffle_images:
+            pixel_values = pixel_values.roll(1, dims=0)
         with autocast(device, amp_dtype):
             if beam_size > 1:  # beam search works on one image at a time
                 sequences = [
@@ -72,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--cache-dir", type=Path, default=None)
     p.add_argument("--output", type=Path, default=None, help="write scores + predictions (JSON)")
+    p.add_argument(
+        "--shuffle-images", action="store_true",
+        help="sanity check: caption each image from another image's pixels (scores must drop)",
+    )  # fmt: skip
     p.add_argument("--device", default="auto")
     return p
 
@@ -93,18 +105,21 @@ def run(argv: Sequence[str] | None = None, dataset_loader=None) -> dict[str, flo
     data_config = dataclasses.replace(data_config, cache_dir=args.cache_dir)
     tokenizer = load_tokenizer(args.checkpoint)
 
-    extra = {} if dataset_loader is None else {"dataset_loader": dataset_loader}
-    dataset = FlickrDataset(data_config, tokenizer, args.split, limit=args.limit, **extra)
+    dataset = build_dataset(
+        data_config, tokenizer, args.split, limit=args.limit, dataset_loader=dataset_loader
+    )
     predictions = predict(
         model, dataset, tokenizer, device, args.beam_size, args.length_penalty,
-        args.batch_size, args.num_workers, amp_dtype,
+        args.batch_size, args.num_workers, amp_dtype, args.shuffle_images,
     )  # fmt: skip
     references = [dataset.references(i) for i in range(len(dataset))]
     scores = corpus_bleu(predictions, references)
+    scores["exact_match"] = exact_match(predictions, references)
 
-    print(f"{args.split}: {len(dataset)} images | beam {args.beam_size}")
+    shuffled = " | IMAGES SHUFFLED (sanity check)" if args.shuffle_images else ""
+    print(f"{args.split}: {len(dataset)} images | beam {args.beam_size}{shuffled}")
     for name, value in scores.items():
-        print(f"  {name.upper():6} {100 * value:6.2f}")
+        print(f"  {name.upper():11} {100 * value:6.2f}")
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         rows = [{"prediction": p, "references": r} for p, r in zip(predictions, references)]

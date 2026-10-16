@@ -5,7 +5,7 @@ All training goes through one command, `cap-train` (same as
 several machines: only the way you **launch** it changes.
 
 - [1. Install](#1-install)
-- [2. Choose an encoder](#2-choose-an-encoder)
+- [2. Choose a dataset and an encoder](#2-choose-a-dataset-and-an-encoder)
 - [3. First: the overfit sanity check](#3-first-the-overfit-sanity-check)
 - [4. One GPU](#4-one-gpu)
 - [5. Several GPUs or machines](#5-several-gpus-or-machines)
@@ -49,40 +49,75 @@ pip install -e '.[dev]'
 pytest            # should end with "N passed"
 ```
 
-Flickr30k (~4.3 GB), the GPT-2 tokenizer and the pretrained encoder weights
-are downloaded on the first run. Use `--cache-dir /big/disk/hf_cache` to put
+The dataset (none for `shapes`, ~4.3 GB for Flickr30k), the GPT-2 tokenizer and
+the pretrained encoder weights are downloaded on the first run. Use `--cache-dir /big/disk/hf_cache` to put
 the dataset elsewhere.
 
-## 2. Choose an encoder
+## 2. Choose a dataset and an encoder
 
-| `--encoder` | What it is | Typical command |
-|---|---|---|
-| `vit-b16` (default) | ViT-B/16 pretrained on ImageNet, fine-tuned with a small LR | `cap-train` |
-| `resnet50` | ResNet-50 pretrained on ImageNet | `cap-train --encoder resnet50` |
-| `bia-vit` | the BIA Vision Transformer, trained from scratch | `cap-train --encoder bia-vit --epochs 40` |
+**Dataset**: `--dataset shapes | flickr8k | flickr30k | coco` (default
+`flickr30k`). Start with `shapes` to prove the model reads images, then move
+to real photos; see [datasets.md](datasets.md) for what each one is for and
+for larger real-world datasets.
 
-The encoder learning rate follows the encoder: **1e-5** for the pretrained
-ones (they are already good; a large LR would wipe out what they learned on
-ImageNet) and **the decoder LR** for BIA-ViT (it starts from random weights).
-Override with `--encoder-lr`.
+**Encoder**: `--encoder <name>`, and `--from-scratch` to start it from random
+weights instead of pretrained ones.
 
-`--freeze-encoder` trains only the decoder. It is several times faster and uses
-much less memory; quality is a bit lower. A good recipe on a small GPU is to
-train frozen first, then fine-tune everything:
+| `--encoder` | Family | Pretrained weights (default) | From scratch |
+|---|---|---|---|
+| `bia-vit` | the project's own ViT | n/a | always |
+| `vit_b_16` (default), `vit_b_32`, `vit_l_16`, `vit_l_32`, `vit_h_14` | torchvision ViT | ImageNet-1k | `--from-scratch` |
+| `resnet18`, `resnet34`, `resnet50`, `resnet101`, `resnet152` | torchvision ResNet | ImageNet-1k | `--from-scratch` |
+| `hf:<model id>` | any Hugging Face vision model | that checkpoint | `--from-scratch` (same architecture, random weights) |
+
+Good Hugging Face choices, all trained on far more images than ImageNet-1k:
+
+| `--encoder` | Pretraining |
+|---|---|
+| `hf:google/vit-base-patch16-224-in21k` | ViT-B/16, supervised on ImageNet-21k (14M images) |
+| `hf:facebook/dinov2-base` (or `-small`, `-large`) | DINOv2 ViT-B/14, self-supervised on 142M images; strong spatial features |
+| `hf:openai/clip-vit-base-patch16` | CLIP image tower, 400M image-text pairs: already aligned with language |
+| `hf:google/siglip-base-patch16-224` | SigLIP image tower, image-text pairs |
+| `hf:microsoft/resnet-50` | ResNet-50 (ImageNet-1k), Hugging Face version |
+
+Images are normalised the way the chosen encoder expects (ImageNet statistics
+for torchvision, the model's own for Hugging Face; stored in the checkpoint).
+Pretrained torchvision ViTs need their native size: 224, or 518 for
+`vit_h_14`. Hugging Face ViTs accept other sizes (positions are interpolated).
+
+```bash
+cap-train                                            # ViT-B/16, ImageNet weights
+cap-train --encoder resnet50                         # ResNet-50, ImageNet weights
+cap-train --encoder resnet50 --from-scratch --epochs 40
+cap-train --encoder vit_b_16 --from-scratch --epochs 40
+cap-train --encoder bia-vit --epochs 40              # the project's own ViT
+cap-train --encoder hf:facebook/dinov2-base
+```
+
+The encoder learning rate follows how the encoder starts: **1e-5** when
+pretrained (it is already good; a large LR would wipe out what it learned) and
+**the decoder LR** when trained from scratch. Override with `--encoder-lr`.
+
+`--freeze-encoder` trains only the decoder (pretrained encoders only make
+sense here). It is several times faster and uses much less memory; quality is
+a bit lower. A good recipe on a small GPU is to train frozen first, then
+fine-tune everything:
 
 ```bash
 cap-train --freeze-encoder --epochs 8 --output-dir checkpoints/frozen
 cap-train --epochs 15 --output-dir checkpoints/run    # full fine-tuning
 ```
 
-(The second command starts from ImageNet again; it does not load the frozen
-run. Use it when you have the GPU time.)
+(The second command starts from the pretrained weights again; it does not load
+the frozen run. Use it when you have the GPU time.)
 
-**About BIA-ViT.** A Vision Transformer trained from scratch on 29k photos will
-caption noticeably worse than a pretrained encoder: ViTs have no built-in idea
-of locality and learn it only from very large datasets. It is kept as a
-learning / research option. If you use it, train longer (`--epochs 40` or
-more) and keep the regularisation (dropout, label smoothing, augmentation).
+**About training from scratch.** On Flickr30k (29k photos) an encoder trained
+from scratch captions noticeably worse than a pretrained one, ViTs more than
+ResNets: Transformers have no built-in idea of locality and learn it only from
+very large datasets. From-scratch runs are for learning and research; train
+longer (`--epochs 40` or more), keep the regularisation (dropout, label
+smoothing, augmentation), or use COCO / larger data. On `shapes`, BIA-ViT from scratch
+learns the task on a laptop CPU (see [testing.md](testing.md)).
 
 ## 3. First: the overfit sanity check
 
@@ -205,34 +240,38 @@ The numbers in this example are illustrative.
 | Flag | Default | Meaning |
 |------|---------|---------|
 | **data** | | |
-| `--dataset-id` | `AnyModal/flickr30k` | Hugging Face dataset |
-| `--image-column` / `--caption-column` | `image` / `original_alt_text` | dataset columns (a caption cell may be one string or a list) |
+| `--dataset` | `flickr30k` | preset: `shapes`, `flickr8k`, `flickr30k`, `coco` ([datasets.md](datasets.md)) |
+| `--dataset-id` | from preset | any Hugging Face dataset (overrides the preset) |
+| `--image-column` | `image` | image column |
+| `--caption-columns` | from preset | one list column, or several string columns |
+| `--group-column` | from preset | rows sharing this value are one image (one caption per row) |
 | `--tokenizer-id` | `openai-community/gpt2` | base BPE vocabulary |
 | `--cache-dir` | HF default | where downloads are stored |
 | `--train-split` / `--val-split` | `train` / `validation` | dataset splits |
-| `--image-size` | 224 | images are resized to this square (pretrained ViT-B/16 needs 224) |
+| `--image-size` | 224 | images are resized to this square (pretrained torchvision ViTs need their native size) |
 | `--max-tokens` | 64 | max caption length incl. BOS/EOS |
 | **model** | | |
-| `--encoder` | `vit-b16` | `vit-b16`, `resnet50` or `bia-vit` |
+| `--encoder` | `vit_b_16` | `bia-vit`, a torchvision ViT / ResNet name, or `hf:<model id>` |
+| `--from-scratch` | off | random-init the encoder instead of loading pretrained weights |
 | `--d-model` | 512 | decoder width (and BIA-ViT width) |
 | `--heads` | 8 | attention heads (`d-model` must divide by it) |
 | `--layers` | 6 | decoder layers |
 | `--ffn-mult` | 4 | feed-forward size = ffn-mult × d-model |
 | `--dropout` | 0.1 | dropout in the decoder (and BIA-ViT) |
-| `--patch-size` | 16 | BIA-ViT patch size |
+| `--patch-size` | 16 | BIA-ViT patch size (image size must be a multiple) |
 | `--encoder-layers` | 6 | BIA-ViT layers |
-| `--no-pretrained-encoder` | off | random-init `vit-b16` / `resnet50` |
 | **training** | | |
 | `--epochs` | 15 | passes over the training images |
 | `--batch-size` | 64 | images per step **per process/GPU** |
 | `--grad-accum` | 1 | micro-batches per optimizer step |
 | `--lr` | 3e-4 | peak decoder learning rate |
-| `--encoder-lr` | auto | 1e-5 for pretrained encoders, `--lr` for BIA-ViT |
+| `--encoder-lr` | auto | 1e-5 for a pretrained encoder, `--lr` for one trained from scratch |
 | `--freeze-encoder` | off | train only the decoder |
 | `--weight-decay` | 0.05 | AdamW decay (not on biases, norms, embeddings) |
 | `--warmup-steps` | 500 | linear LR warmup, in optimizer steps |
 | `--grad-clip` | 1.0 | max gradient norm (0 = off) |
 | `--label-smoothing` | 0.1 | label smoothing for the training loss |
+| `--no-augment` | off | no random crop / colour jitter (never used on `shapes`) |
 | `--precision` | `auto` | `auto`, `fp32`, `bf16`, `fp16` |
 | `--num-workers` | 4 | data-loading processes per GPU |
 | `--train-limit` / `--val-limit` | all | use only the first N images |
@@ -258,9 +297,11 @@ The numbers in this example are illustrative.
 
 ## 11. How long does training take?
 
-One epoch = 29 000 images = 453 optimizer steps at batch 64.
+One Flickr30k epoch = 29 000 images = 453 optimizer steps at batch 64
+(Flickr8k: ~5× shorter; COCO: ~3.9× longer; `shapes` on a laptop CPU: see
+[testing.md](testing.md)).
 
-| Hardware | `vit-b16` fine-tuned | `vit-b16 --freeze-encoder` | `resnet50` |
+| Hardware | `vit_b_16` fine-tuned | `vit_b_16 --freeze-encoder` | `resnet50` |
 |---|---|---|---|
 | A100 / H100 | ~1–2 min / epoch | < 1 min / epoch | ~1 min / epoch |
 | RTX 3090 / 4090 | ~3–4 min / epoch | ~1–2 min / epoch | ~2 min / epoch |

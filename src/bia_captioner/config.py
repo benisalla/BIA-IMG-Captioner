@@ -4,40 +4,105 @@ Configs are frozen dataclasses: they cannot be changed by accident after
 creation, and they are saved inside every checkpoint so a run can be reproduced.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-# Image encoders the model can use (see model.py):
-#   "vit-b16"  : torchvision ViT-B/16 pretrained on ImageNet (default, best quality)
-#   "resnet50" : torchvision ResNet-50 pretrained on ImageNet (lighter, faster)
-#   "bia-vit"  : the hand-written BIA Vision Transformer, trained from scratch
-ENCODERS = ("vit-b16", "resnet50", "bia-vit")
-PRETRAINED_ENCODERS = ("vit-b16", "resnet50")
+# ---------------------------------------------------------------------------
+# Image encoders (see model.py). Every one except "bia-vit" can start from
+# pretrained weights or from scratch (ModelConfig.pretrained).
+# ---------------------------------------------------------------------------
+BIA_VIT = "bia-vit"  # the project's own Vision Transformer, always from scratch
+TORCHVISION_VITS = ("vit_b_16", "vit_b_32", "vit_l_16", "vit_l_32", "vit_h_14")
+TORCHVISION_RESNETS = ("resnet18", "resnet34", "resnet50", "resnet101", "resnet152")
+# Any Hugging Face vision backbone: "hf:<model id>", for example
+#   hf:google/vit-base-patch16-224-in21k   ViT-B/16 pretrained on ImageNet-21k (14M images)
+#   hf:facebook/dinov2-base                DINOv2 ViT-B/14, self-supervised on 142M images
+#   hf:openai/clip-vit-base-patch16        CLIP ViT-B/16 image tower, 400M image-text pairs
+#   hf:microsoft/resnet-50                 ResNet-50 (ImageNet-1k)
+HF_PREFIX = "hf:"
+
+
+def is_valid_encoder(name: str) -> bool:
+    return (
+        name == BIA_VIT
+        or name in TORCHVISION_VITS
+        or name in TORCHVISION_RESNETS
+        or (name.startswith(HF_PREFIX) and len(name) > len(HF_PREFIX))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Datasets. A preset fills DataConfig's dataset fields; see docs/datasets.md.
+# ---------------------------------------------------------------------------
+SYNTHETIC = "synthetic"  # generated on the fly, no download (see data.SyntheticShapes)
+DATASET_PRESETS: dict[str, dict[str, Any]] = {
+    # 8k images of colored shapes, captions fully determined by the image.
+    # The quickest proof that the architecture learns from pixels (minutes on a CPU).
+    "shapes": {"dataset_id": SYNTHETIC, "caption_columns": ("caption",), "group_column": None},
+    # 8 091 everyday photos, 5 captions each, 6k/1k/1k split, ~0.3 GB.
+    "flickr8k": {
+        "dataset_id": "jxie/flickr8k",
+        "caption_columns": tuple(f"caption_{i}" for i in range(5)),
+        "group_column": None,
+    },
+    # 31 014 photos, 5 captions each, Karpathy split 29k/1k/1k, ~4.3 GB.
+    "flickr30k": {
+        "dataset_id": "AnyModal/flickr30k",
+        "caption_columns": ("original_alt_text",),
+        "group_column": None,
+    },
+    # MS-COCO Karpathy split: 113k/5k/5k images, one caption per row (grouped by
+    # image id into ~5 captions per image), ~21 GB. The standard captioning benchmark.
+    "coco": {
+        "dataset_id": "jxie/coco_captions",
+        "caption_columns": ("caption",),
+        "group_column": "cocoid",
+    },
+}
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 @dataclass(frozen=True, slots=True)
 class DataConfig:
     """Where the data comes from and how it is turned into tensors."""
 
-    # Flickr30k with the standard Karpathy splits: 29 000 / 1 014 / 1 000 images,
-    # 5 human captions per image. Plain parquet, downloaded on first use (~4.3 GB).
-    dataset_id: str = "AnyModal/flickr30k"
+    dataset_id: str = "AnyModal/flickr30k"  # Hugging Face dataset, or "synthetic"
     image_column: str = "image"
-    caption_column: str = "original_alt_text"  # list of 5 captions per image
+    # One column holding a list of captions, or several columns with one caption each.
+    caption_columns: tuple[str, ...] = ("original_alt_text",)
+    # Rows sharing this column's value are one image (datasets with one caption per row).
+    group_column: str | None = None
     tokenizer_id: str = "openai-community/gpt2"
     cache_dir: Path | None = None  # Hugging Face cache, None = library default
     train_split: str = "train"
     val_split: str = "validation"  # keep "test" untouched for the final evaluation
     image_size: int = 224
-    # Includes BOS and EOS. Flickr30k captions are short: 64 GPT-2 tokens fit ~99.9%.
+    # Normalisation the encoder expects (ImageNet for torchvision; read from the
+    # Hugging Face image processor for "hf:" encoders, see train.py).
+    image_mean: tuple[float, float, float] = IMAGENET_MEAN
+    image_std: tuple[float, float, float] = IMAGENET_STD
+    # Includes BOS and EOS. Flickr30k captions average 16 GPT-2 tokens; 64 fits 99.96%.
     max_tokens: int = 64
 
     def __post_init__(self) -> None:
+        # Checkpoints store tuples as lists; turn them back into tuples.
+        for name in ("caption_columns", "image_mean", "image_std"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not self.caption_columns:
+            raise ValueError("caption_columns must name at least one column")
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         if self.max_tokens < 2:
             raise ValueError("max_tokens must be at least 2 (room for BOS and EOS)")
+
+
+def data_config_for(dataset: str, **overrides: Any) -> DataConfig:
+    """DataConfig for a preset name ("shapes", "flickr8k", "flickr30k", "coco")."""
+    if dataset not in DATASET_PRESETS:
+        raise ValueError(f"unknown dataset {dataset!r}; choose from {list(DATASET_PRESETS)}")
+    return replace(DataConfig(), **{**DATASET_PRESETS[dataset], **overrides})
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +113,8 @@ class ModelConfig:
     pad_token_id: int
     bos_token_id: int
     eos_token_id: int
-    encoder: str = "vit-b16"
+    encoder: str = "vit_b_16"  # see the encoder list at the top of this file
+    pretrained: bool = True  # start the encoder from pretrained weights (not for bia-vit)
     d_model: int = 512
     attention_heads: int = 8
     decoder_layers: int = 6
@@ -62,8 +128,11 @@ class ModelConfig:
     def __post_init__(self) -> None:
         if self.vocab_size <= 0:
             raise ValueError("vocab_size must be positive")
-        if self.encoder not in ENCODERS:
-            raise ValueError(f"encoder must be one of {ENCODERS}")
+        if not is_valid_encoder(self.encoder):
+            raise ValueError(
+                f"unknown encoder {self.encoder!r}: use {BIA_VIT!r}, one of "
+                f"{TORCHVISION_VITS + TORCHVISION_RESNETS} or 'hf:<model id>'"
+            )
         if self.d_model % self.attention_heads:
             raise ValueError("d_model must be divisible by attention_heads")
         if not 0.0 <= self.dropout < 1.0:
@@ -71,6 +140,11 @@ class ModelConfig:
         if self.pad_token_id in (self.bos_token_id, self.eos_token_id):
             # If pad == eos, the loss ignores EOS and the model never learns to stop.
             raise ValueError("pad_token_id must differ from bos/eos token ids")
+
+    @property
+    def encoder_is_pretrained(self) -> bool:
+        """True when the encoder starts from pretrained weights (bia-vit never does)."""
+        return self.pretrained and self.encoder != BIA_VIT
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,13 +158,14 @@ class TrainConfig:
     grad_accum_steps: int = 1  # effective batch = batch_size * grad_accum_steps
     lr: float = 3e-4  # decoder learning rate
     # Encoder learning rate. None = 1e-5 for a pretrained encoder (it is already
-    # good, a large LR would destroy it) and = lr for the from-scratch BIA-ViT.
+    # good, a large LR would destroy it) and = lr for an encoder trained from scratch.
     encoder_lr: float | None = None
     freeze_encoder: bool = False  # True = train only the decoder (much faster)
     weight_decay: float = 0.05
     warmup_steps: int = 500
     grad_clip: float = 1.0
     label_smoothing: float = 0.1
+    augment: bool = True  # random crop + colour jitter on training images
     precision: str = "auto"  # "auto" | "fp32" | "bf16" | "fp16"
     num_workers: int = 4
     train_limit: int | None = None  # use only N images (tiny overfit runs)
@@ -112,11 +187,11 @@ class TrainConfig:
             raise ValueError("encoder_lr must be >= 0")
 
 
-def resolve_encoder_lr(train_config: TrainConfig, encoder: str) -> float:
-    """The encoder LR to use: explicit value, or a sensible default for the encoder type."""
+def resolve_encoder_lr(train_config: TrainConfig, model_config: ModelConfig) -> float:
+    """The encoder LR to use: explicit value, or a default that depends on its init."""
     if train_config.encoder_lr is not None:
         return train_config.encoder_lr
-    return 1e-5 if encoder in PRETRAINED_ENCODERS else train_config.lr
+    return 1e-5 if model_config.encoder_is_pretrained else train_config.lr
 
 
 def config_to_dict(config: Any) -> dict[str, Any]:
@@ -125,11 +200,19 @@ def config_to_dict(config: Any) -> dict[str, Any]:
 
 
 __all__ = [
-    "ENCODERS",
-    "PRETRAINED_ENCODERS",
+    "BIA_VIT",
+    "DATASET_PRESETS",
+    "HF_PREFIX",
+    "IMAGENET_MEAN",
+    "IMAGENET_STD",
+    "SYNTHETIC",
+    "TORCHVISION_RESNETS",
+    "TORCHVISION_VITS",
     "DataConfig",
     "ModelConfig",
     "TrainConfig",
     "config_to_dict",
+    "data_config_for",
+    "is_valid_encoder",
     "resolve_encoder_lr",
 ]

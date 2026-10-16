@@ -219,7 +219,7 @@ def test_overfit_flag_reuses_train_split_and_disables_regularisation() -> None:
     data_config, config = configs_from_args(args)
     assert data_config.val_split == data_config.train_split
     assert (config.train_limit, config.val_limit, config.batch_size) == (4, 4, 4)
-    assert config.label_smoothing == 0.0
+    assert config.label_smoothing == 0.0 and not config.augment
     assert args.dropout == 0.0
 
 
@@ -231,11 +231,38 @@ def test_cli_model_flags_reach_the_model_config() -> None:
     ModelConfig(vocab_size=10, pad_token_id=0, bos_token_id=1, eos_token_id=2, **sizes)
 
 
-def test_optimizer_uses_the_encoder_specific_default_lr() -> None:
-    model = TinyModel(model_config(encoder="vit-b16"))
-    optimizer = build_optimizer(model, TrainConfig(lr=3e-4), torch.device("cpu"))
-    lrs = {g["name"]: g["lr"] for g in optimizer.param_groups}
-    assert lrs == {"encoder": 1e-5, "decoder": 3e-4}
+def test_dataset_preset_and_overrides_reach_the_data_config() -> None:
+    args = build_parser().parse_args(["--dataset", "coco"])
+    data_config, _ = configs_from_args(args)
+    assert (data_config.dataset_id, data_config.group_column) == ("jxie/coco_captions", "cocoid")
+
+    args = build_parser().parse_args(
+        ["--dataset", "flickr8k", "--caption-columns", "a", "b", "--image-size", "128"]
+    )
+    data_config, _ = configs_from_args(args)
+    assert data_config.dataset_id == "jxie/flickr8k"
+    assert (data_config.caption_columns, data_config.image_size) == (("a", "b"), 128)
+
+
+def test_from_scratch_flag_disables_pretrained_weights() -> None:
+    assert model_sizes_from_args(build_parser().parse_args([]))["pretrained"] is True
+    args = build_parser().parse_args(["--encoder", "resnet50", "--from-scratch"])
+    assert model_sizes_from_args(args)["pretrained"] is False
+
+
+def test_optimizer_lr_depends_on_how_the_encoder_starts() -> None:
+    model = TinyModel(model_config())
+    for pretrained, encoder_lr in ((True, 1e-5), (False, 3e-4)):
+        config = model_config(encoder="vit_b_16", pretrained=pretrained)
+        optimizer = build_optimizer(model, TrainConfig(lr=3e-4), torch.device("cpu"), config)
+        lrs = {g["name"]: g["lr"] for g in optimizer.param_groups}
+        assert lrs == {"encoder": encoder_lr, "decoder": 3e-4}
+
+
+def test_same_seed_gives_the_same_run(tmp_path: Path) -> None:
+    first, _, _ = run(train_config(tmp_path / "a", epochs=3))
+    second, _, _ = run(train_config(tmp_path / "b", epochs=3))
+    assert first.history == second.history
 
 
 def test_train_reduces_loss_and_writes_checkpoints(tmp_path: Path) -> None:

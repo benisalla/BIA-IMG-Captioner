@@ -4,29 +4,37 @@ Big picture:
     image --encoder--> N "image tokens" --projection + position + LayerNorm--> memory
     caption tokens --Transformer decoder (cross-attends to memory)--> next-token logits
 
-Three interchangeable image encoders (`ModelConfig.encoder`):
+Image encoders (`ModelConfig.encoder`; all but bia-vit can be pretrained or from scratch):
 
-    "vit-b16"   torchvision ViT-B/16, ImageNet weights   224px -> 197 tokens x 768
-    "resnet50"  torchvision ResNet-50, ImageNet weights  224px ->  49 tokens x 2048
-    "bia-vit"   BIA Vision Transformer, from scratch     224px -> 196 tokens x d_model
+    "bia-vit"                 BIA Vision Transformer (hand-written), always from scratch
+    "vit_b_16" ... "vit_h_14" torchvision Vision Transformers (ImageNet weights)
+    "resnet18" ... "resnet152" torchvision ResNets (ImageNet weights)
+    "hf:<model id>"           any Hugging Face vision backbone (ViT-21k, DINOv2, CLIP, ...)
 
 The decoder is a hand-written pre-norm Transformer (masked self-attention,
 cross-attention to the image tokens, feed-forward), GPT-2 style.
 """
 
+import inspect
 import math
 
 import torch
+import torchvision
 from torch import Tensor, nn
 from torch.nn import functional as F
-from torchvision.models import ResNet50_Weights, ViT_B_16_Weights, resnet50, vit_b_16
 
-from bia_captioner.config import PRETRAINED_ENCODERS, ModelConfig
+from bia_captioner.config import (
+    BIA_VIT,
+    HF_PREFIX,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    TORCHVISION_VITS,
+    ModelConfig,
+)
 from bia_captioner.tokenizer import IGNORE_INDEX
 
 INIT_STD = 0.02  # GPT-2 style init for every new (non-pretrained) weight
-VIT_B16_PATCH, VIT_B16_WIDTH = 16, 768
-RESNET50_STRIDE, RESNET50_CHANNELS = 32, 2048
+RESNET_STRIDE = 32  # a ResNet shrinks the image 32x before its final pooling
 
 
 # ---------------------------------------------------------------------------
@@ -161,49 +169,120 @@ class BIAViT(nn.Module):
         return self.norm(x)
 
 
-class PretrainedViT(nn.Module):
-    """torchvision ViT-B/16 without its classifier: returns all 197 token features."""
+class TorchvisionViT(nn.Module):
+    """A torchvision Vision Transformer without its classifier: all token features.
 
-    def __init__(self, image_size: int, pretrained: bool) -> None:
+    pretrained=True loads the default ImageNet weights, which fix the image size
+    (224 for vit_b_16 ... vit_l_32, 518 for vit_h_14).
+    """
+
+    def __init__(self, name: str, image_size: int, pretrained: bool) -> None:
         super().__init__()
-        if pretrained and image_size != 224:
-            raise ValueError("the pretrained ViT-B/16 expects image_size 224")
-        if image_size % VIT_B16_PATCH:
-            raise ValueError(f"image_size must be a multiple of {VIT_B16_PATCH} for vit-b16")
-        weights = ViT_B_16_Weights.IMAGENET1K_V1 if pretrained else None
-        self.vit = vit_b_16(weights=weights, image_size=image_size)
+        builder = getattr(torchvision.models, name)
+        if pretrained:
+            weights = torchvision.models.get_model_weights(name).DEFAULT
+            native = weights.meta["min_size"][0]
+            if image_size != native:
+                raise ValueError(f"pretrained {name} expects --image-size {native}")
+            self.vit = builder(weights=weights)
+        else:
+            self.vit = builder(weights=None, image_size=image_size)
+        if image_size % self.vit.patch_size:
+            raise ValueError(f"image_size must be a multiple of {self.vit.patch_size} for {name}")
         self.vit.heads = nn.Identity()  # drop the ImageNet classifier
-        self.num_tokens = (image_size // VIT_B16_PATCH) ** 2 + 1  # patches + class token
-        self.out_dim = VIT_B16_WIDTH
+        self.num_tokens = (image_size // self.vit.patch_size) ** 2 + 1  # patches + class token
+        self.out_dim = self.vit.hidden_dim
 
     def forward(self, pixel_values: Tensor) -> Tensor:
-        x = self.vit._process_input(pixel_values)  # patch embedding [B, N, 768]
+        x = self.vit._process_input(pixel_values)  # patch embedding [B, N, width]
         class_token = self.vit.class_token.expand(x.shape[0], -1, -1)
         x = torch.cat([class_token, x], dim=1)
-        return self.vit.encoder(x)  # adds positions, runs 12 blocks, final LayerNorm
+        return self.vit.encoder(x)  # adds positions, runs the blocks, final LayerNorm
 
 
-class PretrainedResNet(nn.Module):
-    """torchvision ResNet-50 without pooling/classifier: one token per grid cell."""
+class TorchvisionResNet(nn.Module):
+    """A torchvision ResNet without pooling/classifier: one token per grid cell."""
 
-    def __init__(self, image_size: int, pretrained: bool) -> None:
+    def __init__(self, name: str, image_size: int, pretrained: bool) -> None:
         super().__init__()
-        backbone = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
+        backbone = torchvision.models.get_model(name, weights="DEFAULT" if pretrained else None)
+        self.out_dim = backbone.fc.in_features  # 512 for resnet18/34, 2048 for 50/101/152
         self.body = nn.Sequential(*list(backbone.children())[:-2])  # keep the spatial grid
-        self.num_tokens = math.ceil(image_size / RESNET50_STRIDE) ** 2  # 224px -> 7x7 = 49
-        self.out_dim = RESNET50_CHANNELS
+        self.num_tokens = math.ceil(image_size / RESNET_STRIDE) ** 2  # 224px -> 7x7 = 49
 
     def forward(self, pixel_values: Tensor) -> Tensor:
-        return self.body(pixel_values).flatten(2).transpose(1, 2)  # [B, h*w, 2048]
+        return self.body(pixel_values).flatten(2).transpose(1, 2)  # [B, h*w, C]
+
+
+class HuggingFaceEncoder(nn.Module):
+    """Any Hugging Face vision backbone; its last hidden states are the image tokens.
+
+    CLIP / SigLIP checkpoints contain a text tower too: only the image tower is
+    kept. Parameters that never influence the tokens (poolers, projection
+    heads) are found with one probe pass and frozen, so DistributedDataParallel
+    does not wait for gradients that never come.
+    """
+
+    def __init__(self, model_id: str, image_size: int, pretrained: bool) -> None:
+        super().__init__()
+        from transformers import AutoConfig, AutoModel
+
+        if pretrained:
+            model = AutoModel.from_pretrained(model_id)
+        else:
+            model = AutoModel.from_config(AutoConfig.from_pretrained(model_id))
+        self.model = getattr(model, "vision_model", model)  # CLIP / SigLIP: image tower
+        config = self.model.config
+        self.out_dim = getattr(config, "hidden_size", None) or config.hidden_sizes[-1]
+        accepts = inspect.signature(self.model.forward).parameters
+        # ViT-style models need this to run at a size other than their native one.
+        self.extra = (
+            {"interpolate_pos_encoding": True} if "interpolate_pos_encoding" in accepts else {}
+        )
+
+        # Probe pass: number of tokens, and which parameters get no gradient.
+        tokens = self(torch.zeros(1, 3, image_size, image_size))
+        self.num_tokens = tokens.shape[1]
+        tokens.float().sum().backward()
+        self.unused_parameters = set()
+        for name, param in self.named_parameters():
+            if param.grad is None:
+                self.unused_parameters.add(name)
+                param.requires_grad_(False)
+            param.grad = None
+
+    def forward(self, pixel_values: Tensor) -> Tensor:
+        hidden = self.model(pixel_values=pixel_values, **self.extra).last_hidden_state
+        if hidden.dim() == 4:  # convolutional backbone: [B, C, h, w] -> [B, h*w, C]
+            hidden = hidden.flatten(2).transpose(1, 2)
+        return hidden
 
 
 def build_encoder(config: ModelConfig, image_size: int, pretrained: bool) -> nn.Module:
-    """The image encoder named by config.encoder. `pretrained` only affects vit-b16/resnet50."""
-    if config.encoder == "vit-b16":
-        return PretrainedViT(image_size, pretrained)
-    if config.encoder == "resnet50":
-        return PretrainedResNet(image_size, pretrained)
-    return BIAViT(config, image_size)
+    """The image encoder named by config.encoder."""
+    if config.encoder == BIA_VIT:
+        return BIAViT(config, image_size)  # always from scratch
+    if config.encoder.startswith(HF_PREFIX):
+        return HuggingFaceEncoder(config.encoder[len(HF_PREFIX) :], image_size, pretrained)
+    if config.encoder in TORCHVISION_VITS:
+        return TorchvisionViT(config.encoder, image_size, pretrained)
+    return TorchvisionResNet(config.encoder, image_size, pretrained)
+
+
+def encoder_normalization(config: ModelConfig) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """(mean, std) the encoder's inputs must be normalised with.
+
+    torchvision models and BIA-ViT use ImageNet statistics; a Hugging Face
+    model brings its own (CLIP and ViT-21k differ from ImageNet).
+    """
+    if config.encoder.startswith(HF_PREFIX):
+        from transformers import AutoImageProcessor
+
+        processor = AutoImageProcessor.from_pretrained(config.encoder[len(HF_PREFIX) :])
+        mean, std = getattr(processor, "image_mean", None), getattr(processor, "image_std", None)
+        if mean is not None and std is not None:
+            return tuple(mean), tuple(std)
+    return IMAGENET_MEAN, IMAGENET_STD
 
 
 # ---------------------------------------------------------------------------
@@ -215,10 +294,14 @@ class ImageCaptioner(nn.Module):
     """Image encoder + autoregressive Transformer decoder."""
 
     def __init__(
-        self, config: ModelConfig, image_size: int = 224, pretrained_encoder: bool = True
+        self, config: ModelConfig, image_size: int = 224, pretrained_encoder: bool | None = None
     ) -> None:
+        """pretrained_encoder: None = follow config.pretrained. Loading a checkpoint
+        passes False: its weights replace the pretrained ones anyway."""
         super().__init__()
         self.config = config
+        if pretrained_encoder is None:
+            pretrained_encoder = config.pretrained
         self.encoder_frozen = False
         d_model = config.d_model
 
@@ -257,10 +340,11 @@ class ImageCaptioner(nn.Module):
 
         Residual output projections get a smaller std (GPT-2): each block adds
         to the residual stream, so this keeps its variance from growing with depth.
-        A pretrained encoder keeps its own weights; LayerNorms keep (1, 0).
+        Library encoders (torchvision / Hugging Face) keep their own weights,
+        pretrained or freshly initialised by the library; LayerNorms keep (1, 0).
         """
         cfg = self.config
-        skip_encoder = cfg.encoder in PRETRAINED_ENCODERS
+        skip_encoder = not isinstance(self.encoder, BIAViT)
         for name, module in self.named_modules():
             in_encoder = name.startswith("encoder")
             if skip_encoder and in_encoder:
@@ -287,8 +371,9 @@ class ImageCaptioner(nn.Module):
         memory) and stays in eval mode so BatchNorm/dropout behave as at inference.
         """
         self.encoder_frozen = frozen
-        for param in self.encoder.parameters():
-            param.requires_grad_(not frozen)
+        never_trained = getattr(self.encoder, "unused_parameters", set())
+        for name, param in self.encoder.named_parameters():
+            param.requires_grad_(not frozen and name not in never_trained)
         self.train(self.training)
 
     def train(self, mode: bool = True) -> "ImageCaptioner":
@@ -511,4 +596,13 @@ def _sample(logits: Tensor, temperature: float, top_k: int | None, top_p: float 
     return torch.multinomial(probs, num_samples=1).squeeze(1)
 
 
-__all__ = ["IGNORE_INDEX", "BIAViT", "ImageCaptioner", "build_encoder"]
+__all__ = [
+    "IGNORE_INDEX",
+    "BIAViT",
+    "HuggingFaceEncoder",
+    "ImageCaptioner",
+    "TorchvisionResNet",
+    "TorchvisionViT",
+    "build_encoder",
+    "encoder_normalization",
+]

@@ -35,7 +35,10 @@ def load(checkpoint: str, device_name: str):
 def captions_for(image: Image.Image, settings: dict) -> list[tuple[str, float | None]]:
     """[(caption, score)] best first; score is None for greedy / sampling."""
     model, data_config, tokenizer, device = load(settings["checkpoint"], settings["device"])
-    pixels = build_image_transform(data_config.image_size, train=False)(image.convert("RGB"))
+    transform = build_image_transform(
+        data_config.image_size, False, data_config.image_mean, data_config.image_std
+    )
+    pixels = transform(image.convert("RGB"))
     pixels = pixels[None].to(device)
     if settings["mode"] == "Beam search":
         beams = model.beam_search(

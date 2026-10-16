@@ -8,8 +8,8 @@ checkpoints/run/
   tokenizer/     the tokenizer used during training
 ```
 
-No other flags are needed: the encoder type, model size, image size and
-vocabulary are all read from the checkpoint.
+No other flags are needed: the encoder, model size, image size, image
+normalisation, dataset and vocabulary are all read from the checkpoint.
 
 ## Command line
 
@@ -46,8 +46,9 @@ usually close. **Sampling** gives more varied, sometimes less accurate captions.
 cap-evaluate --checkpoint checkpoints/run/best.pt --split test --output test_predictions.json
 ```
 
-Captions the 1 000 test images (beam size 3) and prints corpus BLEU-1..4
-against the 5 human captions of each image. `--output` saves the scores and
+Captions every image of the checkpoint's dataset split (Flickr30k test: 1 000
+images; `shapes` test: 500), beam size 3, and prints corpus BLEU-1..4 against
+all human captions of each image. `--output` saves the scores and
 every prediction next to its references. `--limit N` scores only the first N
 images, `--beam-size 1` is greedy and much faster.
 
@@ -72,7 +73,7 @@ checkpoint = Path("checkpoints/run/best.pt")
 model, data_config = load_model(checkpoint, device="cuda")   # already in eval mode
 tokenizer = load_tokenizer(checkpoint)
 
-print(caption_image(model, tokenizer, Image.open("photo.jpg"), data_config.image_size))
+print(caption_image(model, tokenizer, Image.open("photo.jpg"), data_config))
 ```
 
 For many images at once, batch them yourself and call `model.generate`
@@ -80,6 +81,7 @@ For many images at once, batch them yourself and call `model.generate`
 a time. Both return token ids starting with BOS; decode them with
 `tokenizer.decode(ids, skip_special_tokens=True)`.
 
-Photos should look like Flickr30k (everyday scenes with people and animals).
-Very different images (drawings, screenshots, medical images) are out of
-distribution and give poor captions.
+Images should look like the training data: everyday scenes with people and
+animals for Flickr / COCO, colored shapes for `shapes`. Very different images
+(drawings, screenshots, medical images) are out of distribution and give poor
+captions; [datasets.md](datasets.md) lists larger, more varied datasets.

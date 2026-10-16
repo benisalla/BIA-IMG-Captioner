@@ -43,11 +43,15 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from bia_captioner.config import (
-    ENCODERS,
+    BIA_VIT,
+    DATASET_PRESETS,
+    TORCHVISION_RESNETS,
+    TORCHVISION_VITS,
     DataConfig,
     ModelConfig,
     TrainConfig,
     config_to_dict,
+    data_config_for,
     resolve_encoder_lr,
 )
 from bia_captioner.metrics import corpus_bleu
@@ -279,13 +283,14 @@ def lr_lambda(step: int, warmup_steps: int, total_steps: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-def build_optimizer(model: nn.Module, config: TrainConfig, device: torch.device) -> AdamW:
+def build_optimizer(
+    model: nn.Module, config: TrainConfig, device: torch.device, model_config: ModelConfig
+) -> AdamW:
     """AdamW with the model's own parameter groups (no decay on norms/biases, etc.)."""
-    encoder = getattr(getattr(model, "config", None), "encoder", "bia-vit")
     groups = model.parameter_groups(
         weight_decay=config.weight_decay,
         lr=config.lr,
-        encoder_lr=resolve_encoder_lr(config, encoder),
+        encoder_lr=resolve_encoder_lr(config, model_config),
     )
     # fused=True runs the whole update in one CUDA kernel (faster); CUDA only.
     return AdamW(groups, lr=config.lr, betas=(0.9, 0.98), fused=device.type == "cuda")
@@ -375,7 +380,7 @@ def caption_bleu(
     """Greedy-caption up to `max_images` images and score them with corpus BLEU.
 
     Needs a dataset with `references(index)` and batches with an "index" key
-    (FlickrDataset + CaptionCollator); returns None otherwise.
+    (bia_captioner.data datasets + CaptionCollator); returns None otherwise.
     """
     references_of = getattr(loader.dataset, "references", None)
     if references_of is None:
@@ -599,7 +604,7 @@ def train(
         raise ValueError("train set too small for batch_size * grad_accum_steps")
     total_steps = cfg.epochs * steps_per_epoch
 
-    optimizer = build_optimizer(raw_model, cfg, device)
+    optimizer = build_optimizer(raw_model, cfg, device, model_config)
     scheduler = build_scheduler(optimizer, cfg.warmup_steps, total_steps)
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
@@ -740,6 +745,13 @@ def train(
 # ---------------------------------------------------------------------------
 
 
+ENCODER_HELP = (
+    f"image encoder: {BIA_VIT!r} (own ViT, from scratch), a torchvision ViT "
+    f"{TORCHVISION_VITS}, a torchvision ResNet {TORCHVISION_RESNETS}, or any Hugging Face "
+    "vision model as 'hf:<model id>' (e.g. hf:google/vit-base-patch16-224-in21k)"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """All CLI flags. Defaults come from the config dataclasses."""
     d, t = DataConfig(), TrainConfig()
@@ -747,9 +759,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train the BIA image captioning model.")
 
     data = p.add_argument_group("data")
-    data.add_argument("--dataset-id", default=d.dataset_id)
-    data.add_argument("--image-column", default=d.image_column)
-    data.add_argument("--caption-column", default=d.caption_column)
+    data.add_argument(
+        "--dataset", choices=list(DATASET_PRESETS), default="flickr30k",
+        help="dataset preset (see docs/datasets.md); the flags below override it",
+    )  # fmt: skip
+    data.add_argument("--dataset-id", default=None, help="Hugging Face dataset id")
+    data.add_argument("--image-column", default=None)
+    data.add_argument("--caption-columns", nargs="+", default=None)
+    data.add_argument("--group-column", default=None, help="rows sharing it are one image")
     data.add_argument("--tokenizer-id", default=d.tokenizer_id)
     data.add_argument("--cache-dir", type=Path, default=d.cache_dir)
     data.add_argument("--train-split", default=d.train_split)
@@ -758,7 +775,11 @@ def build_parser() -> argparse.ArgumentParser:
     data.add_argument("--max-tokens", type=int, default=d.max_tokens)
 
     model = p.add_argument_group("model")
-    model.add_argument("--encoder", choices=ENCODERS, default=m.encoder)
+    model.add_argument("--encoder", default=m.encoder, help=ENCODER_HELP)
+    model.add_argument(
+        "--from-scratch", action="store_true",
+        help="random-init the encoder instead of loading pretrained weights",
+    )  # fmt: skip
     model.add_argument("--d-model", type=int, default=m.d_model)
     model.add_argument("--heads", type=int, default=m.attention_heads)
     model.add_argument("--layers", type=int, default=m.decoder_layers, help="decoder layers")
@@ -766,10 +787,6 @@ def build_parser() -> argparse.ArgumentParser:
     model.add_argument("--dropout", type=float, default=m.dropout)
     model.add_argument("--patch-size", type=int, default=m.patch_size, help="bia-vit only")
     model.add_argument("--encoder-layers", type=int, default=m.encoder_layers, help="bia-vit only")
-    model.add_argument(
-        "--no-pretrained-encoder", action="store_true",
-        help="random-init vit-b16 / resnet50 instead of loading ImageNet weights",
-    )  # fmt: skip
 
     opt = p.add_argument_group("training")
     opt.add_argument("--epochs", type=int, default=t.epochs)
@@ -778,13 +795,14 @@ def build_parser() -> argparse.ArgumentParser:
     opt.add_argument("--lr", type=float, default=t.lr)
     opt.add_argument(
         "--encoder-lr", type=float, default=t.encoder_lr,
-        help="default: 1e-5 for pretrained encoders, = --lr for bia-vit",
+        help="default: 1e-5 for a pretrained encoder, = --lr for one trained from scratch",
     )  # fmt: skip
     opt.add_argument("--freeze-encoder", action="store_true", help="train only the decoder")
     opt.add_argument("--weight-decay", type=float, default=t.weight_decay)
     opt.add_argument("--warmup-steps", type=int, default=t.warmup_steps)
     opt.add_argument("--grad-clip", type=float, default=t.grad_clip)
     opt.add_argument("--label-smoothing", type=float, default=t.label_smoothing)
+    opt.add_argument("--no-augment", action="store_true", help="no random crop / colour jitter")
     opt.add_argument("--precision", choices=["auto", "fp32", "bf16", "fp16"], default=t.precision)
     opt.add_argument("--num-workers", type=int, default=t.num_workers)
     opt.add_argument("--train-limit", type=int, default=t.train_limit)
@@ -801,17 +819,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         default=None,
-        help="sanity check: train and validate on the same N train images, no dropout",
+        help="sanity check: train and validate on the same N train images, no regularisation",
     )
     return p
 
 
 def configs_from_args(args: argparse.Namespace) -> tuple[DataConfig, TrainConfig]:
     """Turn parsed flags into DataConfig and TrainConfig."""
-    data_config = DataConfig(
-        dataset_id=args.dataset_id,
-        image_column=args.image_column,
-        caption_column=args.caption_column,
+    overrides = {
+        "dataset_id": args.dataset_id,
+        "image_column": args.image_column,
+        "caption_columns": tuple(args.caption_columns) if args.caption_columns else None,
+        "group_column": args.group_column,
+    }
+    data_config = data_config_for(
+        args.dataset,
+        **{k: v for k, v in overrides.items() if v is not None},
         tokenizer_id=args.tokenizer_id,
         cache_dir=args.cache_dir,
         train_split=args.train_split,
@@ -832,6 +855,7 @@ def configs_from_args(args: argparse.Namespace) -> tuple[DataConfig, TrainConfig
         warmup_steps=args.warmup_steps,
         grad_clip=args.grad_clip,
         label_smoothing=args.label_smoothing,
+        augment=not args.no_augment,
         precision=args.precision,
         num_workers=args.num_workers,
         train_limit=args.train_limit,
@@ -852,6 +876,7 @@ def configs_from_args(args: argparse.Namespace) -> tuple[DataConfig, TrainConfig
             val_limit=n,
             batch_size=min(train_config.batch_size, n),  # drop_last would leave 0 batches
             label_smoothing=0.0,  # smoothing keeps the loss above 0 even when memorised
+            augment=False,  # memorise exactly these images
             bleu_samples=min(train_config.bleu_samples, n),
         )
         args.dropout = 0.0
@@ -862,6 +887,7 @@ def model_sizes_from_args(args: argparse.Namespace) -> dict[str, Any]:
     """The ModelConfig fields that come from the CLI."""
     return {
         "encoder": args.encoder,
+        "pretrained": not args.from_scratch,
         "d_model": args.d_model,
         "attention_heads": args.heads,
         "decoder_layers": args.layers,
@@ -902,26 +928,25 @@ def _build_and_train(
 ) -> TrainState:
     """Build tokenizer, data and model from the CLI flags, then train."""
     # Heavy imports here so `import bia_captioner.train` stays light for tests.
-    from bia_captioner.data import CaptionCollator, FlickrDataset
-    from bia_captioner.model import ImageCaptioner
+    from bia_captioner.data import CaptionCollator, build_dataset
+    from bia_captioner.model import ImageCaptioner, encoder_normalization
     from bia_captioner.tokenizer import build_tokenizer
 
     seed_everything(train_config.seed)  # before building the model: same init weights
     with local_main_first(info):  # one download per machine, the rest reuse the cache
         tokenizer = build_tokenizer(data_config.tokenizer_id, data_config.cache_dir)
-        train_dataset = FlickrDataset(
+        model_config = build_model_config(tokenizer, data_config, **model_sizes_from_args(args))
+        # Images must be normalised the way the encoder was trained (saved in checkpoints).
+        mean, std = encoder_normalization(model_config)
+        data_config = dataclasses.replace(data_config, image_mean=mean, image_std=std)
+        train_dataset = build_dataset(
             data_config, tokenizer, data_config.train_split,
-            limit=train_config.train_limit, train=args.overfit is None,  # no augment when memorising
+            limit=train_config.train_limit, train=train_config.augment,
         )  # fmt: skip
-        val_dataset = FlickrDataset(
+        val_dataset = build_dataset(
             data_config, tokenizer, data_config.val_split, limit=train_config.val_limit
         )
-        model_config = build_model_config(tokenizer, data_config, **model_sizes_from_args(args))
-        model = ImageCaptioner(
-            model_config,
-            image_size=data_config.image_size,
-            pretrained_encoder=not args.no_pretrained_encoder,
-        )
+        model = ImageCaptioner(model_config, image_size=data_config.image_size)
 
     collator = CaptionCollator(pad_token_id=tokenizer.pad_token_id)
     device = resolve_device(train_config.device)
@@ -932,9 +957,11 @@ def _build_and_train(
     n_params = sum(p.numel() for p in model.parameters())
     n_encoder = sum(p.numel() for p in model.encoder.parameters())
     logger.info(
-        "model: %.1fM parameters (encoder %s %.1fM) | train %d images | val %d images",
-        n_params / 1e6, model_config.encoder, n_encoder / 1e6,
-        len(train_dataset), len(val_dataset),
+        "model: %.1fM parameters (encoder %s, %s, %.1fM) | data %s | train %d images | "
+        "val %d images",
+        n_params / 1e6, model_config.encoder,
+        "pretrained" if model_config.encoder_is_pretrained else "from scratch",
+        n_encoder / 1e6, data_config.dataset_id, len(train_dataset), len(val_dataset),
     )  # fmt: skip
 
     return train(

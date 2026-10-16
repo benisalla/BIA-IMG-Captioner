@@ -3,10 +3,12 @@ from pathlib import Path
 import pytest
 
 from bia_captioner.config import (
+    DATASET_PRESETS,
     DataConfig,
     ModelConfig,
     TrainConfig,
     config_to_dict,
+    data_config_for,
     resolve_encoder_lr,
 )
 
@@ -34,9 +36,39 @@ def test_pad_token_must_differ_from_eos() -> None:
         make_model_config(pad_token_id=1)
 
 
-def test_unknown_encoder_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "encoder",
+    ["bia-vit", "vit_b_16", "vit_h_14", "resnet18", "resnet152", "hf:facebook/dinov2-base"],
+)
+def test_known_encoders_are_accepted(encoder: str) -> None:
+    assert make_model_config(encoder=encoder).encoder == encoder
+
+
+@pytest.mark.parametrize("encoder", ["vgg", "vit-b16", "hf:", "resnet"])
+def test_unknown_encoder_is_rejected(encoder: str) -> None:
     with pytest.raises(ValueError, match="encoder"):
-        make_model_config(encoder="vgg")
+        make_model_config(encoder=encoder)
+
+
+def test_bia_vit_is_never_pretrained() -> None:
+    assert make_model_config(encoder="resnet50").encoder_is_pretrained
+    assert not make_model_config(encoder="resnet50", pretrained=False).encoder_is_pretrained
+    assert not make_model_config(encoder="bia-vit", pretrained=True).encoder_is_pretrained
+
+
+def test_every_dataset_preset_builds_a_valid_config() -> None:
+    for name in DATASET_PRESETS:
+        assert data_config_for(name).dataset_id == DATASET_PRESETS[name]["dataset_id"]
+    assert data_config_for("coco").group_column == "cocoid"
+    assert len(data_config_for("flickr8k").caption_columns) == 5
+    assert data_config_for("flickr8k", image_size=64).image_size == 64  # overrides win
+    with pytest.raises(ValueError, match="unknown dataset"):
+        data_config_for("imagenet")
+
+
+def test_lists_from_a_checkpoint_become_tuples() -> None:
+    config = DataConfig(caption_columns=["a", "b"], image_mean=[0.5] * 3, image_std=[0.5] * 3)
+    assert config.caption_columns == ("a", "b") and config.image_mean == (0.5, 0.5, 0.5)
 
 
 def test_train_config_rejects_unknown_precision() -> None:
@@ -44,12 +76,14 @@ def test_train_config_rejects_unknown_precision() -> None:
         TrainConfig(precision="fp8")
 
 
-def test_encoder_lr_defaults_depend_on_the_encoder() -> None:
+def test_encoder_lr_defaults_depend_on_how_the_encoder_starts() -> None:
     config = TrainConfig(lr=3e-4)
-    assert resolve_encoder_lr(config, "vit-b16") == 1e-5  # pretrained: small LR
-    assert resolve_encoder_lr(config, "resnet50") == 1e-5
-    assert resolve_encoder_lr(config, "bia-vit") == 3e-4  # from scratch: same as decoder
-    assert resolve_encoder_lr(TrainConfig(encoder_lr=5e-5), "vit-b16") == 5e-5  # explicit wins
+    pretrained = make_model_config(encoder="vit_b_16")
+    scratch = make_model_config(encoder="resnet50", pretrained=False)
+    assert resolve_encoder_lr(config, pretrained) == 1e-5  # pretrained: small LR
+    assert resolve_encoder_lr(config, scratch) == 3e-4  # from scratch: same as decoder
+    assert resolve_encoder_lr(config, make_model_config(encoder="bia-vit")) == 3e-4
+    assert resolve_encoder_lr(TrainConfig(encoder_lr=5e-5), pretrained) == 5e-5  # explicit wins
 
 
 def test_config_to_dict_stringifies_paths() -> None:
