@@ -83,7 +83,7 @@ With beam search, every beam and its score are shown.
 ```python
 from pathlib import Path
 from PIL import Image
-from bia_captioner.generate import caption_image, load_model, load_tokenizer
+from image_captioner.generate import caption_image, load_model, load_tokenizer
 
 checkpoint = Path("checkpoints/run/best.pt")
 model, data_config = load_model(checkpoint, device="cuda")   # already in eval mode

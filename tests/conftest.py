@@ -4,7 +4,7 @@ import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
-from bia_captioner.data import SHAPE_COLORS, SHAPE_KINDS, SHAPE_SIZES
+from image_captioner.data import SHAPE_COLORS, SHAPE_KINDS, SHAPE_SIZES
 
 # Every word of the synthetic shapes captions, so they round-trip exactly.
 SHAPE_WORDS = [

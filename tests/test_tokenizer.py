@@ -3,7 +3,7 @@
 import pytest
 from conftest import SHAPE_WORDS
 
-from bia_captioner.tokenizer import (
+from image_captioner.tokenizer import (
     IGNORE_INDEX,
     PAD_TOKEN,
     build_tokenizer,

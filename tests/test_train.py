@@ -1,4 +1,4 @@
-"""Tests for bia_captioner.train. CPU only, no network: tiny fake data and model."""
+"""Tests for image_captioner.train. CPU only, no network: tiny fake data and model."""
 
 import math
 from dataclasses import dataclass
@@ -10,8 +10,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset
 
-from bia_captioner.config import DataConfig, ModelConfig, TrainConfig
-from bia_captioner.train import (
+from image_captioner.config import DataConfig, ModelConfig, TrainConfig
+from image_captioner.train import (
     LAST_CHECKPOINT,
     DistInfo,
     build_dataloaders,
@@ -36,7 +36,7 @@ PAD, BOS, EOS, VOCAB = 0, 1, 2, 16
 IMAGE_SIZE = 16
 
 
-# --- fakes that follow the bia_captioner.data / bia_captioner.model interfaces --------
+# --- fakes that follow the image_captioner.data / image_captioner.model interfaces --------
 
 
 class FakeDataset(Dataset):
@@ -70,7 +70,7 @@ class FakeDataset(Dataset):
 
 @dataclass
 class FakeCollator:
-    """Same contract as bia_captioner.data.CaptionCollator."""
+    """Same contract as image_captioner.data.CaptionCollator."""
 
     pad_token_id: int
 
@@ -365,9 +365,9 @@ def test_train_runs_with_real_model_and_collator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, freeze: bool
 ) -> None:
     """Same loop with the real ImageCaptioner (BIA-ViT encoder) and CaptionCollator."""
-    from bia_captioner import train as train_module
-    from bia_captioner.data import CaptionCollator
-    from bia_captioner.model import ImageCaptioner
+    from image_captioner import train as train_module
+    from image_captioner.data import CaptionCollator
+    from image_captioner.model import ImageCaptioner
 
     saved: list[str] = []
     monkeypatch.setattr(

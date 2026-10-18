@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from bia_captioner.metrics import corpus_bleu, exact_match, tokenize
+from image_captioner.metrics import corpus_bleu, exact_match, tokenize
 
 
 def test_tokenize_lowercases_and_drops_punctuation() -> None:

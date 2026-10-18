@@ -13,9 +13,9 @@ import pytest
 import torch
 from PIL import Image
 
-from bia_captioner import evaluate, generate
-from bia_captioner import train as train_module
-from bia_captioner.data import render_shapes
+from image_captioner import evaluate, generate
+from image_captioner import train as train_module
+from image_captioner.data import render_shapes
 
 TINY = [
     "--dataset", "shapes", "--encoder", "bia-vit", "--image-size", "32", "--patch-size", "8",

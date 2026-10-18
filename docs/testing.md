@@ -13,7 +13,7 @@ Five levels of checks, from seconds to an hour:
 
 ```bash
 pytest                       # everything (~3 min on a laptop CPU)
-pytest --cov=bia_captioner   # with line coverage
+pytest --cov=image_captioner   # with line coverage
 pytest tests/test_model.py   # one file
 pytest -k beam -v            # tests whose name contains "beam"
 ruff check src tests         # lint
@@ -214,13 +214,13 @@ cap-train --overfit 8 --encoder bia-vit --epochs 3 --batch-size 8 \
           --d-model 128 --heads 4 --layers 2 --encoder-layers 2 --output-dir /tmp/cap-check ; echo $?
 
 # 2 processes on one machine (CPU uses the gloo backend, GPUs use NCCL)
-torchrun --standalone --nproc_per_node=2 -m bia_captioner.train \
+torchrun --standalone --nproc_per_node=2 -m image_captioner.train \
     --overfit 16 --encoder bia-vit --batch-size 4 --grad-accum 2 \
     --d-model 128 --heads 4 --layers 2 --encoder-layers 2 --epochs 6 --eval-every 3 \
     --output-dir /tmp/cap-ddp
 
 # resume it for 2 more epochs: the log must say "resumed ... at step 6"
-torchrun --standalone --nproc_per_node=2 -m bia_captioner.train \
+torchrun --standalone --nproc_per_node=2 -m image_captioner.train \
     --overfit 16 --encoder bia-vit --batch-size 4 --grad-accum 2 \
     --d-model 128 --heads 4 --layers 2 --encoder-layers 2 --epochs 8 --eval-every 3 \
     --output-dir /tmp/cap-ddp --resume /tmp/cap-ddp/last.pt

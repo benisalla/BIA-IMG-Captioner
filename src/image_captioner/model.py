@@ -23,7 +23,7 @@ import torchvision
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from bia_captioner.config import (
+from image_captioner.config import (
     BIA_VIT,
     HF_PREFIX,
     IMAGENET_MEAN,
@@ -31,7 +31,7 @@ from bia_captioner.config import (
     TORCHVISION_VITS,
     ModelConfig,
 )
-from bia_captioner.tokenizer import IGNORE_INDEX
+from image_captioner.tokenizer import IGNORE_INDEX
 
 INIT_STD = 0.02  # GPT-2 style init for every new (non-pretrained) weight
 RESNET_STRIDE = 32  # a ResNet shrinks the image 32x before its final pooling

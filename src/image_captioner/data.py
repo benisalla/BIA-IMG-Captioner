@@ -31,8 +31,8 @@ from torch.utils.data import Dataset
 from torchvision.transforms import v2
 from transformers import PreTrainedTokenizerBase
 
-from bia_captioner.config import IMAGENET_MEAN, IMAGENET_STD, SYNTHETIC, DataConfig
-from bia_captioner.tokenizer import IGNORE_INDEX, clean_caption, encode_caption
+from image_captioner.config import IMAGENET_MEAN, IMAGENET_STD, SYNTHETIC, DataConfig
+from image_captioner.tokenizer import IGNORE_INDEX, clean_caption, encode_caption
 
 
 def build_image_transform(

@@ -12,9 +12,9 @@ import streamlit as st
 import torch
 from PIL import Image
 
-from bia_captioner.data import build_image_transform
-from bia_captioner.generate import load_model, load_tokenizer
-from bia_captioner.train import resolve_device
+from image_captioner.data import build_image_transform
+from image_captioner.generate import load_model, load_tokenizer
+from image_captioner.train import resolve_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,8 +71,8 @@ def sidebar(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     args = parse_args()
-    st.set_page_config(page_title="BIA Image Captioner", page_icon="🖼️", layout="centered")
-    st.title("BIA Image Captioner")
+    st.set_page_config(page_title="Image Captioner", page_icon="🖼️", layout="centered")
+    st.title("Image Captioner")
     st.caption("Image encoder + Transformer decoder trained on Flickr30k.")
     settings = sidebar(args)
 

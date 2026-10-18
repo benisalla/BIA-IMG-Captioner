@@ -34,8 +34,8 @@ def test_notebook_embeds_the_current_package_code(tmp_path: Path) -> None:
         for cell in notebook.cells
         if cell.cell_type == "code" and cell.source.startswith("%%writefile")
     }
-    package = ROOT / "src" / "bia_captioner"
-    expected = {f"src/bia_captioner/{p.name}": p.read_text() for p in package.glob("*.py")}
+    package = ROOT / "src" / "image_captioner"
+    expected = {f"src/image_captioner/{p.name}": p.read_text() for p in package.glob("*.py")}
     assert set(written) == set(expected), "a module is missing from the notebook"
     for name, source in expected.items():
         # (cells are stored stripped, so compare without the final newline)
@@ -93,5 +93,5 @@ def test_app_page_renders_and_reports_a_missing_checkpoint(
     monkeypatch.setattr(sys, "argv", ["app", "--checkpoint", "does/not/exist.pt"])
     page = AppTest.from_file(str(APP), default_timeout=60).run()
     assert not page.exception
-    assert page.title[0].value == "BIA Image Captioner"
+    assert page.title[0].value == "Image Captioner"
     assert "Checkpoint not found" in page.error[0].value

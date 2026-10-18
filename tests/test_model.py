@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from bia_captioner.config import ModelConfig
-from bia_captioner.model import IGNORE_INDEX, ImageCaptioner, _sample
+from image_captioner.config import ModelConfig
+from image_captioner.model import IGNORE_INDEX, ImageCaptioner, _sample
 
 PAD, BOS, EOS = 0, 1, 2
 IMAGE_SIZE = 64
@@ -333,7 +333,7 @@ def test_bf16_autocast_gives_finite_loss_close_to_fp32() -> None:
 def test_analytic_gradients_match_numerical_gradients() -> None:
     # torch.autograd.gradcheck compares backprop with finite differences (float64):
     # it catches hand-written ops whose backward is wrong.
-    from bia_captioner.model import DecoderBlock, EncoderBlock, MultiHeadAttention
+    from image_captioner.model import DecoderBlock, EncoderBlock, MultiHeadAttention
 
     torch.manual_seed(0)
     x = torch.randn(2, 5, 8, dtype=torch.float64, requires_grad=True)
@@ -419,8 +419,8 @@ def test_pretrained_vit_needs_its_native_image_size() -> None:
 def test_normalisation_follows_the_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     import transformers
 
-    from bia_captioner.config import IMAGENET_MEAN, IMAGENET_STD
-    from bia_captioner.model import encoder_normalization
+    from image_captioner.config import IMAGENET_MEAN, IMAGENET_STD
+    from image_captioner.model import encoder_normalization
 
     for encoder in ("bia-vit", "resnet50", "vit_b_16"):
         assert encoder_normalization(make_config(encoder=encoder)) == (IMAGENET_MEAN, IMAGENET_STD)

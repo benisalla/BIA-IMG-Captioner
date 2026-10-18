@@ -1,4 +1,4 @@
-# BIA-IMG-Captioner
+# Image Captioner
 
 **Show it a photo, get back a sentence describing it.**
 
@@ -198,7 +198,7 @@ The full audit (model, generation, training, data, app) is in
 ## Repository layout
 
 ```
-src/bia_captioner/     the package (read in this order)
+src/image_captioner/     the package (read in this order)
   config.py            every hyperparameter (DataConfig, ModelConfig, TrainConfig),
                        encoder names and dataset presets
   tokenizer.py         GPT-2 BPE + a dedicated <|pad|>; sequences are <bos> caption <eos>

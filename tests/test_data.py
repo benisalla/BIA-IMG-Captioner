@@ -7,8 +7,8 @@ import pytest
 import torch
 from PIL import Image
 
-from bia_captioner.config import DataConfig, data_config_for
-from bia_captioner.data import (
+from image_captioner.config import DataConfig, data_config_for
+from image_captioner.data import (
     CaptionCollator,
     CaptionDataset,
     SyntheticShapes,

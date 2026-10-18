@@ -1,6 +1,6 @@
 """Use a trained model: image in, caption out.
 
-    python -m bia_captioner.generate --checkpoint checkpoints/run/best.pt --image photo.jpg
+    python -m image_captioner.generate --checkpoint checkpoints/run/best.pt --image photo.jpg
 
 Everything needed to rebuild the network (its configs) is stored inside the
 checkpoint, and the tokenizer is saved next to it, so no flags have to match.
@@ -18,10 +18,10 @@ import torch
 from PIL import Image
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from bia_captioner.config import DataConfig, ModelConfig
-from bia_captioner.data import build_image_transform
-from bia_captioner.model import ImageCaptioner
-from bia_captioner.train import resolve_device
+from image_captioner.config import DataConfig, ModelConfig
+from image_captioner.data import build_image_transform
+from image_captioner.model import ImageCaptioner
+from image_captioner.train import resolve_device
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ def caption_image(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Caption images with a trained BIA captioner.")
+    p = argparse.ArgumentParser(description="Caption images with a trained captioner.")
     p.add_argument("--checkpoint", type=Path, required=True, help="path to best.pt / last.pt")
     p.add_argument("--image", type=Path, required=True, nargs="+", help="one or more images")
     p.add_argument("--output", type=Path, default=None, help="save {image: caption} as JSON")

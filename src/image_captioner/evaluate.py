@@ -1,6 +1,6 @@
 """Score a trained model on a held-out split with corpus BLEU-1..4.
 
-    python -m bia_captioner.evaluate --checkpoint checkpoints/run/best.pt --split test
+    python -m image_captioner.evaluate --checkpoint checkpoints/run/best.pt --split test
 
 Each image is captioned once (beam search by default) and compared with all
 of its reference captions. Optionally writes every prediction to a JSON file, a
@@ -22,10 +22,10 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 from torch.utils.data import DataLoader, Subset
 
-from bia_captioner.data import CaptionCollator, build_dataset
-from bia_captioner.generate import load_model, load_tokenizer
-from bia_captioner.metrics import corpus_bleu, exact_match
-from bia_captioner.train import autocast, resolve_device, resolve_precision
+from image_captioner.data import CaptionCollator, build_dataset
+from image_captioner.generate import load_model, load_tokenizer
+from image_captioner.metrics import corpus_bleu, exact_match
+from image_captioner.train import autocast, resolve_device, resolve_precision
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ def save_examples(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="BLEU evaluation of a trained BIA captioner.")
+    p = argparse.ArgumentParser(description="BLEU evaluation of a trained captioner.")
     p.add_argument("--checkpoint", type=Path, required=True)
     p.add_argument("--split", default="test", help="dataset split to score (default: test)")
     p.add_argument("--limit", type=int, default=None, help="score only the first N images")

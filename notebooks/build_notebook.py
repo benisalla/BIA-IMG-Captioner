@@ -1,8 +1,8 @@
 """Build notebooks/train_colab_kaggle.ipynb: a self-contained training notebook.
 
-Every module of src/bia_captioner is embedded verbatim (as %%writefile cells),
+Every module of src/image_captioner is embedded verbatim (as %%writefile cells),
 so the notebook runs the exact package code and needs no GitHub access.
-Regenerate after changing src/bia_captioner:
+Regenerate after changing src/image_captioner:
     python notebooks/build_notebook.py . notebooks/train_colab_kaggle.ipynb
 """
 
@@ -38,11 +38,11 @@ def code(text: str) -> None:
 
 # ---------------------------------------------------------------------------
 md("""
-# BIA Image Captioner: training notebook (Kaggle & Colab)
+# Image Captioner: training notebook (Kaggle & Colab)
 
 Train the image-captioning model with a **free Kaggle or Colab GPU**, on
 synthetic shapes, Flickr8k, Flickr30k or COCO. The notebook is **self-contained**: section 2 writes the
-`bia_captioner` package (identical to the repo's `src/`), and training goes
+`image_captioner` package (identical to the repo's `src/`), and training goes
 through the same `train()` function as the `cap-train` command.
 
 | | Kaggle | Colab |
@@ -77,29 +77,29 @@ print("ready")
 md("""
 ## 2. The package
 
-The cells below write `src/bia_captioner/*.py`, copied from the repo at build
+The cells below write `src/image_captioner/*.py`, copied from the repo at build
 time. Read them in this order: `config` → `tokenizer` → `data` → `model` →
 `metrics` → `train`.
 """)
 code("""
 import os
 
-os.makedirs("src/bia_captioner", exist_ok=True)
+os.makedirs("src/image_captioner", exist_ok=True)
 """)
 for module in MODULES:
-    source = (ROOT / "src" / "bia_captioner" / f"{module}.py").read_text()
-    code(f"%%writefile src/bia_captioner/{module}.py\n{source}")
+    source = (ROOT / "src" / "image_captioner" / f"{module}.py").read_text()
+    code(f"%%writefile src/image_captioner/{module}.py\n{source}")
 code("""
 import importlib
 import sys
 
 sys.path.insert(0, "src")
-for name in [m for m in sys.modules if m.startswith("bia_captioner")]:
+for name in [m for m in sys.modules if m.startswith("image_captioner")]:
     del sys.modules[name]  # pick up the files just written if this cell is re-run
-import bia_captioner.train as T
+import image_captioner.train as T
 
 importlib.reload(T)
-print("bia_captioner ready")
+print("image_captioner ready")
 """)
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ from pathlib import Path
 
 import torch
 
-from bia_captioner.config import TrainConfig, data_config_for
+from image_captioner.config import TrainConfig, data_config_for
 
 SMOKE_TEST = False          # True = tiny quick check of the whole notebook
 DATASET = "flowers"         # "shapes" | "flowers" | "birds" | "flickr8k" | "flickr30k" | "coco"
@@ -241,9 +241,9 @@ import logging
 
 import matplotlib.pyplot as plt
 
-from bia_captioner.data import CaptionCollator, build_dataset
-from bia_captioner.model import encoder_normalization
-from bia_captioner.tokenizer import build_tokenizer
+from image_captioner.data import CaptionCollator, build_dataset
+from image_captioner.model import encoder_normalization
+from image_captioner.tokenizer import build_tokenizer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S",
                     force=True)
@@ -290,7 +290,7 @@ md("## 5. Model")
 code("""
 import math
 
-from bia_captioner.model import ImageCaptioner
+from image_captioner.model import ImageCaptioner
 
 model = ImageCaptioner(model_config, image_size=data_config.image_size).to(device)
 n_params = sum(p.numel() for p in model.parameters())
@@ -398,7 +398,7 @@ md("""
 ### 7.1 Captions for validation images (best checkpoint, beam search)
 """)
 code("""
-from bia_captioner.generate import load_model
+from image_captioner.generate import load_model
 
 best_model, _ = load_model(OUTPUT_DIR / T.BEST_CHECKPOINT, device)
 fig, axes = plt.subplots(2, 4, figsize=(16, 9))
@@ -424,7 +424,7 @@ exact match), ready to commit to GitHub. Both use test images spread evenly
 over the split, not hand-picked ones.
 """)
 code("""
-from bia_captioner import evaluate
+from image_captioner import evaluate
 
 test_args = ["--checkpoint", str(OUTPUT_DIR / T.BEST_CHECKPOINT), "--split", "test",
              "--beam-size", "3", "--output", str(OUTPUT_DIR / "test_predictions.json"),

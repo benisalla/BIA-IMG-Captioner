@@ -11,10 +11,10 @@ from test_data import FakeSplit
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
-from bia_captioner import evaluate
-from bia_captioner.config import DataConfig, ModelConfig, config_to_dict
-from bia_captioner.generate import load_model, load_tokenizer, run
-from bia_captioner.model import ImageCaptioner
+from image_captioner import evaluate
+from image_captioner.config import DataConfig, ModelConfig, config_to_dict
+from image_captioner.generate import load_model, load_tokenizer, run
+from image_captioner.model import ImageCaptioner
 
 IMAGE_SIZE = 32
 WORDS = ["<pad>", "<bos>", "<eos>", "a", "dog", "runs", "on", "grass"]
@@ -164,7 +164,7 @@ def test_evaluate_writes_an_examples_table(tmp_path: Path) -> None:
 
 
 def test_save_examples_marks_exact_matches(tmp_path: Path) -> None:
-    from bia_captioner.evaluate import save_examples
+    from image_captioner.evaluate import save_examples
 
     images = [Image.new("RGB", (32, 32), "red"), Image.new("RGB", (32, 32), "blue")]
     path = save_examples(
@@ -175,7 +175,7 @@ def test_save_examples_marks_exact_matches(tmp_path: Path) -> None:
 
 
 def test_shuffled_order_never_keeps_an_image_and_is_fixed() -> None:
-    from bia_captioner.evaluate import shuffled_order
+    from image_captioner.evaluate import shuffled_order
 
     order = shuffled_order(50)
     assert sorted(order) == list(range(50))  # a permutation
@@ -185,7 +185,7 @@ def test_shuffled_order_never_keeps_an_image_and_is_fixed() -> None:
 
 
 def test_gallery_picks_are_spread_over_the_split() -> None:
-    from bia_captioner.evaluate import spread_indices
+    from image_captioner.evaluate import spread_indices
 
     assert spread_indices(655, 4) == [0, 218, 436, 654]
     assert spread_indices(3, 12) == [0, 1, 2]

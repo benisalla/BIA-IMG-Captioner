@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from bia_captioner.config import (
+from image_captioner.config import (
     DATASET_PRESETS,
     DataConfig,
     ModelConfig,

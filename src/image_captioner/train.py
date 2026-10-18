@@ -10,10 +10,10 @@ The file is split into small pieces you can read top to bottom:
 6. train()         - the training loop (takes ready-made objects, easy to test)
 7. CLI             - main() builds everything from command-line flags
 
-Run it with:  python -m bia_captioner.train --help
+Run it with:  python -m image_captioner.train --help
 
 Multi-GPU / multi-node: launch the same command with torchrun, e.g.
-    torchrun --nproc_per_node=4 -m bia_captioner.train ...
+    torchrun --nproc_per_node=4 -m image_captioner.train ...
 torchrun starts one process per GPU and sets RANK / WORLD_SIZE / LOCAL_RANK;
 the code below picks those up and wraps the model in DistributedDataParallel.
 """
@@ -42,7 +42,7 @@ from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
-from bia_captioner.config import (
+from image_captioner.config import (
     BIA_VIT,
     DATASET_PRESETS,
     TORCHVISION_RESNETS,
@@ -54,8 +54,8 @@ from bia_captioner.config import (
     data_config_for,
     resolve_encoder_lr,
 )
-from bia_captioner.metrics import corpus_bleu
-from bia_captioner.tokenizer import IGNORE_INDEX, vocab_size
+from image_captioner.metrics import corpus_bleu
+from image_captioner.tokenizer import IGNORE_INDEX, vocab_size
 
 try:  # numpy is optional; we only need it to seed its RNG
     import numpy as np
@@ -380,7 +380,7 @@ def caption_bleu(
     """Greedy-caption up to `max_images` images and score them with corpus BLEU.
 
     Needs a dataset with `references(index)` and batches with an "index" key
-    (bia_captioner.data datasets + CaptionCollator); returns None otherwise.
+    (image_captioner.data datasets + CaptionCollator); returns None otherwise.
     """
     references_of = getattr(loader.dataset, "references", None)
     if references_of is None:
@@ -756,7 +756,7 @@ def build_parser() -> argparse.ArgumentParser:
     """All CLI flags. Defaults come from the config dataclasses."""
     d, t = DataConfig(), TrainConfig()
     m = ModelConfig(vocab_size=1, pad_token_id=0, bos_token_id=1, eos_token_id=1)
-    p = argparse.ArgumentParser(description="Train the BIA image captioning model.")
+    p = argparse.ArgumentParser(description="Train the image captioning model.")
 
     data = p.add_argument_group("data")
     data.add_argument(
@@ -934,10 +934,10 @@ def _build_and_train(
     args: argparse.Namespace, data_config: DataConfig, train_config: TrainConfig, info: DistInfo
 ) -> TrainState:
     """Build tokenizer, data and model from the CLI flags, then train."""
-    # Heavy imports here so `import bia_captioner.train` stays light for tests.
-    from bia_captioner.data import CaptionCollator, build_dataset
-    from bia_captioner.model import ImageCaptioner, encoder_normalization
-    from bia_captioner.tokenizer import build_tokenizer
+    # Heavy imports here so `import image_captioner.train` stays light for tests.
+    from image_captioner.data import CaptionCollator, build_dataset
+    from image_captioner.model import ImageCaptioner, encoder_normalization
+    from image_captioner.tokenizer import build_tokenizer
 
     seed_everything(train_config.seed)  # before building the model: same init weights
     with local_main_first(info):  # one download per machine, the rest reuse the cache

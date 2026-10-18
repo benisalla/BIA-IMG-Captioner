@@ -22,8 +22,8 @@ from test_train import (  # reuse the tiny fakes from the single-process tests
     train_config,
 )
 
-from bia_captioner.config import DataConfig
-from bia_captioner.train import LAST_CHECKPOINT, build_dataloaders, get_dist_info, train
+from image_captioner.config import DataConfig
+from image_captioner.train import LAST_CHECKPOINT, build_dataloaders, get_dist_info, train
 
 WORLD_SIZE = 2
 

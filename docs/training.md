@@ -1,7 +1,7 @@
 # Training guide
 
 All training goes through one command, `cap-train` (same as
-`python -m bia_captioner.train`). It runs on CPU, one GPU, several GPUs, or
+`python -m image_captioner.train`). It runs on CPU, one GPU, several GPUs, or
 several machines: only the way you **launch** it changes.
 
 - [1. Install](#1-install)
@@ -161,12 +161,12 @@ the code detects this and uses `DistributedDataParallel` (DDP).
 
 ```bash
 # all 4 GPUs of this machine
-torchrun --standalone --nproc_per_node=4 -m bia_captioner.train --output-dir checkpoints/run
+torchrun --standalone --nproc_per_node=4 -m image_captioner.train --output-dir checkpoints/run
 
 # 2 machines x 8 GPUs: run this on every machine (MASTER = address of machine 0)
 torchrun --nnodes=2 --nproc_per_node=8 --rdzv_backend=c10d \
     --rdzv_endpoint=MASTER:29500 --rdzv_id=cap-run-1 \
-    -m bia_captioner.train --output-dir /shared/checkpoints/run
+    -m image_captioner.train --output-dir /shared/checkpoints/run
 ```
 
 - each process gets its own GPU and its own slice of the data;
@@ -235,7 +235,7 @@ The numbers in this example are illustrative.
 ## 9. All flags
 
 `cap-train --help` prints them all. Defaults come from
-`src/bia_captioner/config.py`.
+`src/image_captioner/config.py`.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
